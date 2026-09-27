@@ -198,11 +198,17 @@ void CloseSave(HANDLE h) {
     AcquireSRWLockExclusive(&g_saveLock);
     for (int i = 0; i < kSaveSlots; ++i)
         if (g_saves[i].handle == h) {
-            // Only an actual save slot arms the probe. accountdata is written at
-            // launch and periodically, and arming on it ran the probe eight times
-            // in twenty minutes -- twice before the save had even been loaded --
-            // with every run walking 8 GB and hitching the game.
-            isGameSave = ContainsNoCase(g_saves[i].name, L"save");
+            // Only an actual save slot, ACTUALLY WRITTEN, arms the probe.
+            //
+            // The name test alone was not enough, and the reason is easy to miss:
+            // TrackSave fires on every .hg the game OPENS, reads included, and the
+            // game reads save<N>.hg while enumerating slots at the main menu. Those
+            // handles close with writes == 0, so FinishSave logs nothing and they
+            // are invisible in the log -- but the name still contains "save", so
+            // they armed the probe anyway. Measured: two 8 GB runs triggered in the
+            // first 20 seconds of a session, before a save had been loaded, and the
+            // real save's arm then had to wait behind them.
+            isGameSave = ContainsNoCase(g_saves[i].name, L"save") && g_saves[i].writes > 0;
             FinishSave(g_saves[i]);
             finished = true;
         }

@@ -1618,13 +1618,8 @@ int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outM
             memcpy(&b, p + kInvHistCap, 4);
             if (a != b) continue;
             ++stage[1];
-            // Counted, NOT enforced. If size <= capacity really is the invariant
-            // then stage[4] will track stage[2] closely and the next version can
-            // gate on it; if it does not, we have learnt that cheaply instead of
-            // having filtered out every real inventory on a guess.
             unsigned int sz;
             memcpy(&sz, p + kInvStoreSize, 4);
-            if (sz >= 1u && sz <= a) ++stage[4];
             unsigned short w, h;
             memcpy(&w, p + kInvGridW, 2);
             memcpy(&h, p + kInvGridH, 2);
@@ -1634,6 +1629,12 @@ int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outM
             memcpy(&ptr, p + kInvSlotsPtr, 8);
             if (!ptr || (ptr & 7) || ptr < 0x10000ull || ptr > 0x7FFFFFFFFFFFull) continue;
             ++stage[2];
+            // Counted, NOT enforced, and counted HERE rather than at the cheap
+            // stages so the figure is comparable with the candidate count. The
+            // first live run put it after the +0x18 test and reported 160,046
+            // against 917 candidates, which reads as nonsense: it was measuring a
+            // different population two million positions wide.
+            if (sz >= 1u && sz <= a) ++stage[4];
             out[n++] = (uintptr_t)p;
             if (n >= outMax) break;
         }
@@ -1916,11 +1917,11 @@ int FindLiveInventories(std::string& rep) {
         "  %u had a plausible capacity at +0x08, %u also matched at +0x18,\r\n"
         "  %u also had a grid of 1..64 per side, %u also a usable pointer at +0x10\r\n"
         "  -> %llu candidates\r\n"
-        "  of those, %u also had 1 <= size(+0x0C) <= capacity(+0x08) -- the\r\n"
-        "  invariant this build reads but does not yet trust\r\n",
+        "  of those %llu, %u also had 1 <= size(+0x0C) <= capacity(+0x08) --\r\n"
+        "  the invariant this build reads but does not yet trust\r\n",
         scanned / 1048576.0, (unsigned long long)faultedRegions,
         stage[0], stage[1], stage[3], stage[2], (unsigned long long)cand.size(),
-        stage[4]));
+        (unsigned long long)cand.size(), stage[4]));
 
     int found = 0;
     int fellBack = 0, maskAgreed = 0, maskRead = 0, tailWasStale = 0;
