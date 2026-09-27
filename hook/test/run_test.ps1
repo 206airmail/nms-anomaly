@@ -121,12 +121,37 @@ if ($Probe) {
     Get-Content $inst[0].FullName
     $itext = Get-Content $inst[0].FullName -Raw
 
+    # Phase L runs first now, because the live layout is the one that exists while
+    # the game is running. Asserted on the exact count and on the grid positions,
+    # which is what proved the layout right in the first place.
+    if ($itext -notmatch 'VERDICT: LIVE INVENTORIES FOUND \(3\)') {
+        throw 'phase L did not find exactly the 3 live-layout inventories'
+    }
+    foreach ($needle in @('FUEL1 x2163 @\(4,0\)', 'SAND1 x820 @\(6,1\)',
+                          'FUEL1 x971 @\(3,1\)', 'REACTION2 x4 @\(8,0\)')) {
+        if ($itext -notmatch $needle) {
+            throw "phase L did not report $needle with its grid position"
+        }
+    }
+    Write-Host ""
+    Write-Host "phase L control PASSED: 3 live inventories, grid positions intact,"
+    Write-Host "  and the object whose counts disagree was rejected."
+
     # Phase P: the run of 27. Asserted on the COUNT, not on "a run was found" --
     # a cluster of three would satisfy any presence check while meaning the stride
     # or the handle shape is wrong.
-    if ($itext -notmatch 'VERDICT: CONTAINER RUN FOUND \(spans 27 of 27 strides') {
+    # Phase P only runs when phase L finds nothing -- it describes the save document,
+    # which the live game does not contain. Its control still has to work, because it
+    # is what a save-time probe uses, so it is exercised by its own switch below
+    # rather than deleted.
+    if ($itext -match 'PHASE P -- skipped') {
+        Write-Host "phase P skipped (phase L succeeded) -- run with -SaveDoc to exercise it"
+        $skipP = $true
+    }
+    if (-not $skipP -and $itext -notmatch 'VERDICT: CONTAINER RUN FOUND \(spans 27 of 27 strides') {
         throw 'phase P did not find the full 27-stride run in its own control'
     }
+    if (-not $skipP) {
     if ($itext -notmatch '27 strides of item-holding containers\. That is cGcPlayerStateData') {
         throw 'phase P spanned 27 strides but did not recognise the run as complete'
     }
@@ -150,10 +175,11 @@ if ($Probe) {
             throw "phase P dropped the container with $lie -- Width/Height are not a filter"
         }
     }
+    }
     Write-Host ""
-    Write-Host "phase P control PASSED: full 27-run found, lying grid values kept."
+    Write-Host "phase P control PASSED or skipped."
 
-    if ($itext -notmatch 'VERDICT: (INVENTORY FOUND|CONTAINER RUN FOUND)') {
+    if ($itext -notmatch 'VERDICT: (LIVE INVENTORIES FOUND|INVENTORY FOUND|CONTAINER RUN FOUND)') {
         throw 'the instance probe missed its own positive control (report above)'
     }
     # Phase P now short-circuits before the container-signature phase, so the

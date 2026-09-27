@@ -273,6 +273,94 @@ static void PublishFakePlayerState() {
 }
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Live-layout inventories: the control for phase L.
+//
+// Built to the layout measured against the running game, not to a guess -- Nick's
+// exosuit, starship and storage container 0 all read 10/H/?/count/?/ptr/count, and
+// the elements matched his screen exactly. Three objects at IRREGULAR offsets,
+// because that is how the real ones sit: one ~120 MB allocation, clustered within
+// ~28 KB, with no stride between them.
+//
+// The usual caveat applies and is the reason it is written down: this fixture is
+// built to the same layout phase L tests, so it proves the scan, the validation and
+// the report, and proves nothing about the layout itself. The layout's evidence is
+// the live game -- FUEL1 x2163 at grid (4,0) and SAND1 x820 at (6,1), both
+// confirmed against the UI, and a Cheat Engine address that matched ours exactly.
+//
+// One object is deliberately malformed: counts that disagree between +0x08 and
+// +0x18. It must be rejected, because that disagreement is the cheap test doing
+// nearly all the work in the real scan.
+static void PublishFakeLiveInventories() {
+    struct Seed { const char* id; int amount; int x, y; };
+    static const Seed suit[] = {
+        {"FUEL1", 2163, 4, 0}, {"SAND1", 820, 6, 1}, {"LAND1", 5319, 2, 0},
+        {"CATALYST1", 1430, 3, 0}, {"OXYGEN", 618, 6, 0},
+    };
+    static const Seed ship[] = {
+        {"FUEL1", 971, 3, 1}, {"ASTEROID1", 445, 0, 0},
+    };
+    static const Seed chest[] = {
+        {"REACTION2", 4, 8, 0}, {"ASTEROID3", 982, 1, 0},
+    };
+    struct Build { const Seed* seeds; int n; int slots; int w, h; size_t gap; };
+    static const Build builds[] = {
+        {suit,  5, 32, 10, 12, 0},
+        {ship,  2, 32, 10,  5, 0x1A0},      // irregular gaps, like the real ones
+        {chest, 2, 16, 10,  6, 0x248},
+    };
+
+    unsigned char* pool = (unsigned char*)calloc(1, 0x4000);
+    if (!pool) return;
+    size_t at = 0x40;
+    for (int b = 0; b < 3; ++b) {
+        at += builds[b].gap;
+        unsigned char* obj = pool + at;
+        int slots = builds[b].slots;
+        unsigned char* arr = (unsigned char*)calloc((size_t)slots, 0x30);
+        if (!arr) return;
+        for (int k = 0; k < builds[b].n; ++k) {
+            unsigned char* e = arr + (size_t)k * 0x30;
+            const Seed& sd = builds[b].seeds[k];
+            memcpy(e + 0x00, sd.id, strlen(sd.id));
+            int mx = 9999;
+            memcpy(e + 0x10, &sd.x, 4);
+            memcpy(e + 0x14, &sd.y, 4);
+            memcpy(e + 0x18, &sd.amount, 4);
+            memcpy(e + 0x20, &mx, 4);
+        }
+        unsigned short w = (unsigned short)builds[b].w, h = (unsigned short)builds[b].h;
+        unsigned long long p64 = (unsigned long long)(void*)arr;
+        unsigned int cnt = (unsigned int)slots;
+        memcpy(obj + 0x00, &w, 2);
+        memcpy(obj + 0x02, &h, 2);
+        memcpy(obj + 0x08, &cnt, 4);
+        memcpy(obj + 0x10, &p64, 8);
+        memcpy(obj + 0x18, &cnt, 4);
+        at += 0x160;
+    }
+    // The one that must be rejected: counts that disagree.
+    {
+        unsigned char* obj = pool + 0x3000;
+        unsigned char* arr = (unsigned char*)calloc(8, 0x30);
+        if (arr) {
+            memcpy(arr, "FUEL1", 5);
+            int amt = 1, mx = 9999;
+            memcpy(arr + 0x18, &amt, 4);
+            memcpy(arr + 0x20, &mx, 4);
+            unsigned long long p64 = (unsigned long long)(void*)arr;
+            unsigned int a = 8, bcount = 9;
+            memcpy(obj + 0x08, &a, 4);
+            memcpy(obj + 0x10, &p64, 8);
+            memcpy(obj + 0x18, &bcount, 4);
+        }
+    }
+    char msg[160];
+    sprintf_s(msg, "fake live inventories: 3 valid + 1 malformed, pool at %p\n", (void*)pool);
+    OutputDebugStringA(msg);
+}
+// ---------------------------------------------------------------------------
+
 static LONG WINAPI GameFilter(EXCEPTION_POINTERS*) {
     OutputDebugStringA("fake game crash filter ran\n");
     return EXCEPTION_EXECUTE_HANDLER;
@@ -288,6 +376,7 @@ int wmain(int argc, wchar_t** argv) {
     PublishFakeInventory();
     PublishFakeIdPool();
     PublishFakePlayerState();
+    PublishFakeLiveInventories();
     char state[16] = {};
     XInputGetState(0, state);
 

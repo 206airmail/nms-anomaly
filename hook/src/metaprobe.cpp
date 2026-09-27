@@ -1014,6 +1014,47 @@ constexpr size_t kPsdRunBytes       = kPsdContainers * kContStride;
 // mid-game. A run of 3 is weak evidence on its own, which is exactly why the
 // members must be content-validated rather than merely periodic.
 constexpr int kMinRunExtent = 3;
+
+// ---- THE LIVE INVENTORY OBJECT, measured against the running game -----------
+//
+// Anchored on an address Nick found with Cheat Engine (his exosuit's Silicate
+// Powder amount) and cross-checked against three inventories whose contents he
+// confirmed from the game's own UI. This supersedes the container search above.
+//
+// cGcInventoryElement is EXACTLY what the class table says -- id at +0x00, the
+// grid position at +0x10 (SAND1 read (6,1) and sits 7th from left, 2nd row on
+// screen), Amount at +0x18, MaxAmount at +0x20, stride 0x30. The array holds only
+// OWNED slots, which is why a part-unlocked suit reports 32.
+//
+// The CONTAINER is not cGcInventoryContainer at all. That class is 0x159 with
+// Name, Version, IsCool, Width and Height; in the live object every one of those
+// reads zero. What is actually there:
+//
+//        +0x00 u16 ?      +0x02 u16 ?     +0x04 u32 ?
+//        +0x08 u32 slot count
+//        +0x0C u32 ?
+//        +0x10 ptr  -> the element array
+//        +0x18 u32 slot count again
+//        +0x20 ptr  -> a second element array
+//
+//   exosuit    10 12 24 | 32 | 22 -> 32 slots
+//   starship   10  5 40 | 32 | 30 -> 32 slots
+//   storage 0  10  6 50 | 16 | 11 -> 16 slots
+//
+// So the 27-inline-container run is the SAVE DOCUMENT only. Live inventories sit
+// at irregular offsets inside one ~120 MB private allocation, clustered within
+// ~28 KB, with no stride to cluster on -- and nothing in 10 GB points at the
+// exosuit object, so it is pooled or embedded rather than separately referenced.
+//
+// The count appearing twice, at +0x08 and +0x18, is what makes the scan cheap:
+// two dwords that must agree rejects nearly everything before a pointer is even
+// dereferenced.
+constexpr size_t kInvCountA   = 0x08;
+constexpr size_t kInvSlotsPtr = 0x10;
+constexpr size_t kInvCountB   = 0x18;
+constexpr size_t kInvGridW    = 0x00;
+constexpr size_t kInvGridH    = 0x02;
+constexpr unsigned kInvMaxSlots = 2048;
 constexpr size_t kOwnershipFirstContainer = 0x20;
 constexpr size_t kFreighterFirstContainer = 0x30;
 
@@ -1517,7 +1558,155 @@ int FindContainers(std::string& rep) {
     return found;
 }
 
+// Candidate live inventory objects. POD-only and SEH-guarded like every other leaf.
+//
+// Cheap test first, in the order that rejects fastest: the two counts must agree
+// and be in range, and only then is the pointer looked at. Counters per stage,
+// because a filter that reports only its output teaches nothing when the output is
+// empty.
+int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outMax,
+                           unsigned int* stage, int* faulted, size_t* scanned) {
+    int n = 0;
+    *faulted = 0;
+    *scanned = 0;
+    if (outMax <= 0 || size < 0x40) return 0;
+    const unsigned char* p = (const unsigned char*)base;
+    const unsigned char* end = (const unsigned char*)(base + size - 0x40);
+    __try {
+        for (; p < end; p += 8) {
+            unsigned int a, b;
+            memcpy(&a, p + kInvCountA, 4);
+            if (a - 1u >= kInvMaxSlots) continue;         // 1..2048, unsigned trick
+            ++stage[0];
+            memcpy(&b, p + kInvCountB, 4);
+            if (a != b) continue;
+            ++stage[1];
+            unsigned long long ptr;
+            memcpy(&ptr, p + kInvSlotsPtr, 8);
+            if (!ptr || (ptr & 7) || ptr < 0x10000ull || ptr > 0x7FFFFFFFFFFFull) continue;
+            ++stage[2];
+            out[n++] = (uintptr_t)p;
+            if (n >= outMax) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    *scanned = (size_t)((const unsigned char*)p - (const unsigned char*)base);
+    return n;
+}
+
+// Every declared slot must parse as an element, and at least one must hold an item.
+// "Every one" rather than "the first one" is what separates a real inventory from a
+// coincidence: the only false positives this left in the whole process were a
+// handful of `Vec4` shader strings.
+bool InventoryIsReal(uintptr_t obj, unsigned int* slotsOut, char* firstId, int idCap) {
+    unsigned int count = 0;
+    uintptr_t ptr = 0;
+    if (!SafeRead(obj + kInvCountA, &count, 4)) return false;
+    if (!SafeRead(obj + kInvSlotsPtr, &ptr, 8)) return false;
+    if (count == 0 || count > kInvMaxSlots) return false;
+    if (!Readable(ptr, (size_t)count * kElemStride)) return false;
+    bool anyItem = false;
+    for (unsigned int k = 0; k < count; ++k) {
+        ElemView e;
+        if (!ReadElem(ptr + (uintptr_t)k * kElemStride, &e)) return false;
+        if (e.empty) continue;
+        if (e.maxAmount <= 0 || e.maxAmount > 100000) return false;
+        if (e.amount < 0 || e.amount > e.maxAmount * 4) return false;
+        if (!anyItem && firstId && idCap > 0) {
+            int i = 0;
+            for (; i < idCap - 1 && e.id[i]; ++i) firstId[i] = e.id[i];
+            firstId[i] = '\0';
+        }
+        anyItem = true;
+    }
+    if (slotsOut) *slotsOut = count;
+    return anyItem;
+}
+
+// Live inventories, by the layout measured against the running game.
+int FindLiveInventories(std::string& rep) {
+    AppendReport(rep,
+        "PHASE L -- live inventories, by the measured runtime layout\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  The runtime object is NOT cGcInventoryContainer: Name, Version, IsCool,\r\n"
+        "  Width and Height all read zero in the live one. What identifies it is the\r\n"
+        "  slot count appearing twice, at +0x08 and +0x18, around a pointer at +0x10\r\n"
+        "  to an array where EVERY declared slot parses as an element.\r\n\r\n");
+
+    ULONG_PTR stackLo = 0, stackHi = 0;
+    GetCurrentThreadStackLimits(&stackLo, &stackHi);
+    g_exclude.clear();
+    Exclude((uintptr_t)stackLo, (uintptr_t)stackHi);
+
+    std::vector<uintptr_t> cand;
+    cand.reserve(1 << 16);
+    std::vector<uintptr_t> batch(1 << 15);
+    unsigned int stage[8] = {0};
+    size_t scanned = 0, sinceYield = 0, faultedRegions = 0;
+    size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
+
+    for (size_t ri = 0; ri < g_regions.size(); ++ri) {
+        const Region& r = g_regions[ri];
+        if (r.type != MEM_PRIVATE) continue;
+        if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+        if (scanned >= budget) break;
+        int faulted = 0;
+        size_t did = 0;
+        int n = ScanForLiveInventories(r.base, r.size, batch.data(), (int)batch.size(),
+                                       stage, &faulted, &did);
+        if (faulted) ++faultedRegions;
+        for (int k = 0; k < n; ++k)
+            if (!Excluded(batch[k])) cand.push_back(batch[k]);
+        scanned += did;
+        sinceYield += did;
+        if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+    }
+
+    AppendReport(rep, Fmt(
+        "  scanned %.1f MB (%llu regions faulted)\r\n"
+        "  %u had a plausible count at +0x08, %u also matched at +0x18,\r\n"
+        "  %u also had a usable pointer at +0x10 -> %llu candidates\r\n",
+        scanned / 1048576.0, (unsigned long long)faultedRegions,
+        stage[0], stage[1], stage[2], (unsigned long long)cand.size()));
+
+    int found = 0;
+    for (size_t i = 0; i < cand.size(); ++i) {
+        unsigned int slots = 0;
+        char firstId[24] = {0};
+        if (!InventoryIsReal(cand[i], &slots, firstId, sizeof(firstId))) continue;
+        ++found;
+        if (found > 64) continue;
+        unsigned short w = 0, h = 0;
+        uintptr_t ptr = 0;
+        SafeRead(cand[i] + kInvGridW, &w, 2);
+        SafeRead(cand[i] + kInvGridH, &h, 2);
+        SafeRead(cand[i] + kInvSlotsPtr, &ptr, 8);
+        AppendReport(rep, Fmt("\r\n  0x%llX  %u slots, grid %ux%u, array 0x%llX\r\n    ",
+                              (unsigned long long)cand[i], slots, w, h,
+                              (unsigned long long)ptr));
+        int shown = 0;
+        for (unsigned int k = 0; k < slots && shown < 10; ++k) {
+            ElemView e;
+            if (!ReadElem(ptr + (uintptr_t)k * kElemStride, &e)) break;
+            if (e.empty) continue;
+            AppendReport(rep, Fmt("%s%s x%d @(%d,%d)", shown ? ", " : "",
+                                  e.id, e.amount, e.x, e.y));
+            ++shown;
+        }
+        AppendReport(rep, "\r\n");
+    }
+    AppendReport(rep, Fmt("\r\n  %d objects held a fully-parsing slot array with items\r\n"
+                          "  (identify which is which by CONTENTS -- they sit at irregular\r\n"
+                          "   offsets in one allocation, so there is no index to rely on)\r\n\r\n",
+                          found));
+    return found;
+}
+
 // Find cGcPlayerStateData by the periodicity of its inline container run.
+// Kept, but it describes the SAVE DOCUMENT: measured against the live game it
+// found 51 element runs and validated zero containers, because the 0x160 stride
+// and the 27-member run do not exist outside a save.
 int FindPlayerStateData(std::string& rep) {
     AppendReport(rep,
         "PHASE P -- cGcPlayerStateData by its run of 27 inline containers\r\n"
@@ -1717,7 +1906,11 @@ void RunInstanceProbe(int runNo) {
     // rather than for an inventory. Four attempts at leaf signatures failed, and
     // the run of 27 inline containers is the one piece of structure in this object
     // graph that cannot be produced by coincidence.
-    int psd = FindPlayerStateData(rep);
+    int live = FindLiveInventories(rep);
+    int psd = live ? 0 : FindPlayerStateData(rep);
+    if (live)
+        AppendReport(rep, "PHASE P -- skipped: phase L already found live inventories.\r\n"
+                          "----------------------------------------------------------------\r\n\r\n");
     // Phase 1 only when phase P found nothing: it re-walks all of private memory,
     // and running both cost 17 minutes for one answer. Its per-reason counters are
     // still worth having when phase P comes up empty.
@@ -1725,6 +1918,28 @@ void RunInstanceProbe(int runNo) {
     if (psd)
         AppendReport(rep, "PHASE 1 -- skipped: phase P already identified containers.\r\n"
                           "----------------------------------------------------------------\r\n\r\n");
+
+    if (live > 0) {
+        AppendReport(rep, Fmt(
+            "VERDICT: LIVE INVENTORIES FOUND (%d)\r\n"
+            "----------------------------------------------------------------\r\n"
+            "  Objects in the runtime layout, each with a slot array in which every\r\n"
+            "  declared slot parses. Beware duplicates: the same stack has been seen\r\n"
+            "  at eight addresses (live state, save-document copies, UI buffers), so\r\n"
+            "  a WRITE must establish which copy the game actually reads.\r\n"
+            "  probe took %llu ms\r\n",
+            live, (unsigned long long)(GetTickCount64() - t0)));
+        WriteReportFile(outPath, rep);
+        logger::Pushf(Level::Info, "instprobe",
+                      "verdict LIVE INVENTORIES FOUND: %d objects in the runtime layout "
+                      "in %llu ms | detail in %s",
+                      live, (unsigned long long)(GetTickCount64() - t0),
+                      ToUtf8(outPath).c_str());
+        g_regions.clear();
+        g_regions.shrink_to_fit();
+        g_exclude.clear();
+        return;
+    }
 
     // A run of containers at the right stride outranks any count of separately
     // matched ones: 27 of them is cGcPlayerStateData itself, and that is the
