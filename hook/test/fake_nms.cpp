@@ -310,25 +310,59 @@ static void PublishFakeLiveInventories() {
     static const Seed chest[] = {
         {"REACTION2", 4, 8, 0}, {"ASTEROID3", 982, 1, 0},
     };
-    struct Build { const Seed* seeds; int n; int slots; int w, h; size_t gap; };
-    static const Build builds[] = {
-        {suit,  7, 32, 10, 12, 0},
-        {ship,  2, 32, 10,  5, 0x1A0},      // irregular gaps, like the real ones
-        {chest, 2, 16, 10,  6, 0x248},
+    static const Seed spare[] = {
+        {"YELLOW2", 77, 0, 0},
     };
 
-    unsigned char* pool = (unsigned char*)calloc(1, 0x4000);
+    // WHAT THIS FIXTURE CAN AND CANNOT PROVE. It is written from the layout ReNMS
+    // describes, so it CANNOT confirm that layout -- only the live game can. What
+    // it does prove is that the probe reads and reports the fields it claims to,
+    // and one thing more, which is the point:
+    //
+    //   the tail between size and capacity is filled with garbage that is NOT
+    //   element-shaped, so a probe that walks capacity REJECTS every inventory
+    //   here and a probe that walks size accepts them.
+    //
+    // That is a control that fails on the old code, which is the only kind worth
+    // having. It is also exactly what the live game did to us: 85 declared where
+    // 33 were real.
+    struct Build {
+        const Seed* seeds; int n;
+        int w, h;
+        int miCapacity;     // +0x04, and the popcount the mask is given
+        int size, cap;      // mStore.size and mStore.capacity
+        int lattice;        // index in the fixed array, or -1 for off-lattice
+    };
+    static const Build builds[] = {
+        {suit,  7, 10, 12, 30, 10, 15,  0},
+        {ship,  2, 10,  5, 40,  5, 12,  1},
+        {chest, 2, 10,  6, 50,  4,  9,  2},
+        {spare, 1,  3,  3,  4,  2,  6,  5},   // a gap at 3 and 4: members missing
+        {spare, 1,  7,  5, 12,  1,  4, -1},   // off the lattice entirely
+    };
+    const int kBuilds = (int)(sizeof(builds) / sizeof(builds[0]));
+
+    // A fixed array of stores at a constant stride, most of them empty, which is
+    // what cTkFixedArray<cGcInventoryStore, N> looks like when only some ships are
+    // owned. The stride is arbitrary here -- sizeof(cGcInventoryStore) is not known
+    // -- so the control proves the lattice detector copes with MISSING members, not
+    // that any particular stride is right.
+    const size_t kStride  = 0x1F0;
+    const size_t kLattice = 0x400;
+    const size_t kOffLat  = 0x3040;      // not congruent to kLattice mod kStride
+
+    unsigned char* pool = (unsigned char*)calloc(1, 0x8000);
     if (!pool) return;
-    size_t at = 0x40;
-    for (int b = 0; b < 3; ++b) {
-        at += builds[b].gap;
+    for (int b = 0; b < kBuilds; ++b) {
+        const Build& bd = builds[b];
+        size_t at = bd.lattice >= 0 ? kLattice + (size_t)bd.lattice * kStride : kOffLat;
         unsigned char* obj = pool + at;
-        int slots = builds[b].slots;
-        unsigned char* arr = (unsigned char*)calloc((size_t)slots, 0x30);
+
+        unsigned char* arr = (unsigned char*)calloc((size_t)bd.cap, 0x30);
         if (!arr) return;
-        for (int k = 0; k < builds[b].n; ++k) {
+        for (int k = 0; k < bd.n; ++k) {
             unsigned char* e = arr + (size_t)k * 0x30;
-            const Seed& sd = builds[b].seeds[k];
+            const Seed& sd = bd.seeds[k];
             memcpy(e + 0x00, sd.id, strlen(sd.id));
             // MaxAmount 0 for the unbounded stack, and 1 for installed technology.
             int mx = 9999;
@@ -339,19 +373,39 @@ static void PublishFakeLiveInventories() {
             memcpy(e + 0x18, &sd.amount, 4);
             memcpy(e + 0x20, &mx, 4);
         }
-        unsigned short w = (unsigned short)builds[b].w, h = (unsigned short)builds[b].h;
+        // [n, size) stay zeroed -- properly empty slots, which are real and must
+        // not be mistaken for malformed ones.
+        // [size, cap) is the stale allocation. Bytes that cannot be an id.
+        for (int k = bd.size; k < bd.cap; ++k)
+            memset(arr + (size_t)k * 0x30, 0x01, 0x30);
+
+        unsigned short w = (unsigned short)bd.w, h = (unsigned short)bd.h;
+        short micap = (short)bd.miCapacity;
         unsigned long long p64 = (unsigned long long)(void*)arr;
-        unsigned int cnt = (unsigned int)slots;
+        unsigned int cap = (unsigned int)bd.cap, size = (unsigned int)bd.size;
         memcpy(obj + 0x00, &w, 2);
         memcpy(obj + 0x02, &h, 2);
-        memcpy(obj + 0x08, &cnt, 4);
+        memcpy(obj + 0x04, &micap, 2);
+        memcpy(obj + 0x08, &cap, 4);
+        memcpy(obj + 0x0C, &size, 4);
         memcpy(obj + 0x10, &p64, 8);
-        memcpy(obj + 0x18, &cnt, 4);
-        at += 0x160;
+        memcpy(obj + 0x18, &cap, 4);      // history capacity: the gate compares these
+        memcpy(obj + 0x1C, &size, 4);
+        memcpy(obj + 0x20, &p64, 8);
+
+        // mxValidSlots at -0x80: miCapacity bits, low 16 of each word only.
+        int left = bd.miCapacity;
+        for (int word = 0; word < 16 && left > 0; ++word) {
+            int take = left < 16 ? left : 16;
+            unsigned long long bits = (take == 16) ? 0xFFFFull
+                                                   : ((1ull << take) - 1ull);
+            memcpy(obj - 0x80 + (size_t)word * 8, &bits, 8);
+            left -= take;
+        }
     }
-    // The one that must be rejected: counts that disagree.
+    // The one that must be rejected: the two capacities disagree.
     {
-        unsigned char* obj = pool + 0x3000;
+        unsigned char* obj = pool + 0x7000;
         unsigned char* arr = (unsigned char*)calloc(8, 0x30);
         if (arr) {
             memcpy(arr, "FUEL1", 5);
@@ -359,14 +413,16 @@ static void PublishFakeLiveInventories() {
             memcpy(arr + 0x18, &amt, 4);
             memcpy(arr + 0x20, &mx, 4);
             unsigned long long p64 = (unsigned long long)(void*)arr;
-            unsigned int a = 8, bcount = 9;
+            unsigned int a = 8, bcount = 9, size = 8;
             memcpy(obj + 0x08, &a, 4);
+            memcpy(obj + 0x0C, &size, 4);
             memcpy(obj + 0x10, &p64, 8);
             memcpy(obj + 0x18, &bcount, 4);
         }
     }
     char msg[160];
-    sprintf_s(msg, "fake live inventories: 3 valid + 1 malformed, pool at %p\n", (void*)pool);
+    sprintf_s(msg, "fake live inventories: %d valid (4 on a 0x%zX lattice) + 1 malformed,"
+                   " pool at %p\n", kBuilds, kStride, (void*)pool);
     OutputDebugStringA(msg);
 }
 // ---------------------------------------------------------------------------

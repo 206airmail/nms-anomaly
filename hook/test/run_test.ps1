@@ -124,8 +124,30 @@ if ($Probe) {
     # Phase L runs first now, because the live layout is the one that exists while
     # the game is running. Asserted on the exact count and on the grid positions,
     # which is what proved the layout right in the first place.
-    if ($itext -notmatch 'VERDICT: LIVE INVENTORIES FOUND \(3\)') {
-        throw 'phase L did not find exactly the 3 live-layout inventories'
+    if ($itext -notmatch 'VERDICT: LIVE INVENTORIES FOUND \(5\)') {
+        throw 'phase L did not find exactly the 5 live-layout inventories'
+    }
+    # THE CONTROL THAT FAILS ON THE OLD CODE. Every fixture inventory has garbage
+    # between mStore.size and mStore.capacity, so a probe that walks capacity finds
+    # a malformed slot in all five and rejects all five. Asserting the tail figure
+    # rather than just the count is what makes that visible rather than lucky.
+    if ($itext -notmatch '0 of 5 had to fall back to capacity, and 5 of 5 had a tail') {
+        throw 'phase L is not walking mStore.size -- it read the allocation, not the elements'
+    }
+    # The ownership mask at -0x80 is a PREDICTION about the live game, so the
+    # fixture can only prove the probe reads it as specified: popcount equal to
+    # miCapacity with nothing above bit 15.
+    if ($itext -notmatch '5 of 5 readable, 5 of those had') {
+        throw 'phase L did not read the -0x80 ownership mask back as written'
+    }
+    # Four of the five sit on a 0x1F0 lattice with members 3 and 4 deliberately
+    # absent, which is what a part-owned cTkFixedArray looks like. A detector that
+    # needs consecutive members would report 3.
+    if ($itext -notmatch 'stride 0x1F0: best lattice holds 4 stores') {
+        throw 'the fixed-array test did not recover the lattice through its gaps'
+    }
+    if ($itext -notmatch 'miCapacity 30' -or $itext -notmatch 'store 10/15 used/alloc') {
+        throw 'phase L did not report miCapacity and the used/allocated split'
     }
     # The unbounded stack is asserted explicitly: it is the exact case that made the
     # first live run validate zero inventories.
@@ -142,8 +164,10 @@ if ($Probe) {
         }
     }
     Write-Host ""
-    Write-Host "phase L control PASSED: 3 live inventories, grid positions intact,"
-    Write-Host "  and the object whose counts disagree was rejected."
+    Write-Host "phase L control PASSED: 5 live inventories, grid positions intact,"
+    Write-Host "  mStore.size walked rather than mStore.capacity, the -0x80 mask read"
+    Write-Host "  back, the 0x1F0 lattice recovered through its gaps, and the object"
+    Write-Host "  whose capacities disagree rejected."
 
     # Phase P: the run of 27. Asserted on the COUNT, not on "a run was found" --
     # a cluster of three would satisfy any presence check while meaning the stride

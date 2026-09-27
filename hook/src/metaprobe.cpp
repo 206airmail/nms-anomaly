@@ -1026,36 +1026,72 @@ constexpr int kMinRunExtent = 3;
 // screen), Amount at +0x18, MaxAmount at +0x20, stride 0x30. The array holds only
 // OWNED slots, which is why a part-unlocked suit reports 32.
 //
-// The CONTAINER is not cGcInventoryContainer at all. That class is 0x159 with
-// Name, Version, IsCool, Width and Height; in the live object every one of those
-// reads zero. What is actually there:
+// The CONTAINER is not cGcInventoryContainer. It is cGcInventoryStore, a
+// runtime-only class with no metadata descriptor -- which is exactly why its shape
+// had to be measured rather than extracted. Two things corroborate the name:
+// cGcInventoryStoreBalance IS in our table (a balance table named after the
+// class), and ReNMS declares the class outright.
 //
-//        +0x00 u16 ?      +0x02 u16 ?     +0x04 u32 ?
-//        +0x08 u32 slot count
-//        +0x0C u32 ?
-//        +0x10 ptr  -> the element array
-//        +0x18 u32 slot count again
-//        +0x20 ptr  -> a second element array
+// Member order is ReNMS's; the sizes are ours, because its container templates are
+// compile-time placeholders (cTkVector<T> : public std::vector<T>, which is three
+// pointers and not what NMS uses). Offsets below are relative to what this file
+// calls the object base -- ReNMS puts mxValidSlots FIRST, so the real object
+// starts 0x80 EARLIER:
 //
-//   exosuit    10 12 24 | 32 | 22 -> 32 slots
-//   starship   10  5 40 | 32 | 30 -> 32 slots
-//   storage 0  10  6 50 | 16 | 11 -> 16 slots
+//      -0x80 cTkBitArray<uint64_t,true,16> mxValidSlots[16]   the ownership mask
+//      +0x00 int16 miWidth
+//      +0x02 int16 miHeight
+//      +0x04 int16 miCapacity        = the save's ValidSlotIndices length
+//      +0x08 u32   mStore.capacity   ALLOCATED
+//      +0x0C u32   mStore.size       IN USE  <-- the number of real elements
+//      +0x10 T*    mStore.data
+//      +0x18 u32   mStoreHistory.capacity
+//      +0x1C u32   mStoreHistory.size
+//      +0x20 T*    mStoreHistory.data
 //
-// So the 27-inline-container run is the SAVE DOCUMENT only. Live inventories sit
-// at irregular offsets inside one ~120 MB private allocation, clustered within
-// ~28 KB, with no stride to cluster on -- and nothing in 10 GB points at the
-// exosuit object, so it is pooled or embedded rather than separately referenced.
+// THE CORRECTION THAT MATTERS: this file used to take the element count from
+// +0x08, which is the vector's ALLOCATION, and walk that many records -- reading
+// capacity-minus-size entries of stale memory off the end of every inventory.
+// Checked against Nick's decompiled save, three for three:
 //
-// The count appearing twice, at +0x08 and +0x18, is what makes the scan cheap:
-// two dwords that must agree rejects nearly everything before a pointer is even
-// dereferenced.
-constexpr size_t kInvCountA   = 0x08;
-constexpr size_t kInvSlotsPtr = 0x10;
-constexpr size_t kInvCountB   = 0x18;
-constexpr size_t kInvGridW    = 0x00;
-constexpr size_t kInvGridH    = 0x02;
+//              +0x04  save Valid | +0x08  +0x0C  save Slots
+//   storage 0     50        50   |   16     11        11      both exact
+//   starship      40        40   |   32     30        31      off by one
+//   exosuit       24        30   |   32     22        23      off by one
+//
+// The chest is exact both ways because chest slots are fixed and he was not
+// touching it; the others are off by one because the save and the live reads are
+// different moments in an active session. capacity >= size always, so the
+// assignment cannot be the other way round.
+//
+// That one mistake very likely explains BOTH earlier failures: the freighter's
+// "33 in the save, 85 live" is capacity 85 against size 33, and the single odd
+// slot that vetoed a whole inventory was stale memory past size, not a real item
+// with a strange MaxAmount.
+//
+// So the +0x08 == +0x18 gate is capacity-equals-capacity, not a count agreeing
+// with itself. It still rejects nearly everything before a pointer is
+// dereferenced, which is all the scan needs of it -- but do not describe it as a
+// consistency check, and do not tighten it on a hypothesis: it is the one thing
+// here that is known to work against the live game.
+constexpr size_t kInvGridW     = 0x00;   // int16 miWidth
+constexpr size_t kInvGridH     = 0x02;   // int16 miHeight
+constexpr size_t kInvCapacity  = 0x04;   // int16 miCapacity -- owned slots
+constexpr size_t kInvStoreCap  = 0x08;   // u32 mStore.capacity
+constexpr size_t kInvStoreSize = 0x0C;   // u32 mStore.size -- walk THIS many
+constexpr size_t kInvSlotsPtr  = 0x10;   // T* mStore.data
+constexpr size_t kInvHistCap   = 0x18;   // u32 mStoreHistory.capacity
+constexpr size_t kInvHistSize  = 0x1C;   // u32 mStoreHistory.size
+constexpr size_t kInvHistPtr   = 0x20;   // T* mStoreHistory.data
 constexpr unsigned kInvMaxSlots = 2048;
 constexpr unsigned kInvMaxGrid  = 64;     // largest real grid seen is 10x16
+
+// mxValidSlots sits BEHIND the base: 16 words, one per grid row, each expected to
+// use only its low 16 bits (cTkBitArray<uint64_t,true,16> resolves to uint64_t[1],
+// and 16 rows x 16 columns covers the largest real grid, 10x16). UNTESTED against
+// the live game -- it is read and reported, never used to accept or reject.
+constexpr size_t   kInvMaskBack  = 0x80;
+constexpr unsigned kInvMaskWords = 16;
 constexpr size_t kOwnershipFirstContainer = 0x20;
 constexpr size_t kFreighterFirstContainer = 0x30;
 
@@ -1576,12 +1612,19 @@ int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outM
     __try {
         for (; p < end; p += 8) {
             unsigned int a, b;
-            memcpy(&a, p + kInvCountA, 4);
+            memcpy(&a, p + kInvStoreCap, 4);
             if (a - 1u >= kInvMaxSlots) continue;         // 1..2048, unsigned trick
             ++stage[0];
-            memcpy(&b, p + kInvCountB, 4);
+            memcpy(&b, p + kInvHistCap, 4);
             if (a != b) continue;
             ++stage[1];
+            // Counted, NOT enforced. If size <= capacity really is the invariant
+            // then stage[4] will track stage[2] closely and the next version can
+            // gate on it; if it does not, we have learnt that cheaply instead of
+            // having filtered out every real inventory on a guess.
+            unsigned int sz;
+            memcpy(&sz, p + kInvStoreSize, 4);
+            if (sz >= 1u && sz <= a) ++stage[4];
             unsigned short w, h;
             memcpy(&w, p + kInvGridW, 2);
             memcpy(&h, p + kInvGridH, 2);
@@ -1633,12 +1676,50 @@ int SlotShape(uintptr_t a, char* idOut, int idCap) {
 // sane MaxAmount and is still a real item.
 unsigned int InvReasons[6];
 
-bool InventoryIsReal(uintptr_t obj, unsigned int* slotsOut, char* firstId, int idCap) {
-    unsigned int count = 0;
+// Bits set, without an intrinsic. This is leaf code reached from SEH-guarded
+// readers; a loop that cannot fail is worth more here than a fast one.
+int PopCount64(unsigned long long v) {
+    int n = 0;
+    while (v) { v &= v - 1; ++n; }
+    return n;
+}
+
+// Everything phase L learns about one store. POD, so it is safe to fill from
+// inside the guarded readers.
+struct LiveInv {
+    unsigned int storeCap;      // +0x08 mStore.capacity
+    unsigned int storeSize;     // +0x0C mStore.size
+    unsigned int walked;        // how many we actually validated
+    unsigned int histCap;
+    unsigned int histSize;
+    int          capacityField; // +0x04 miCapacity
+    int          items;
+    int          tailTotal;     // capacity - size: what we used to walk
+    int          tailMalformed; // ... and how much of it is not an element
+    int          maskPop;       // popcount of mxValidSlots, -1 if unreadable
+    int          maskHighBits;  // bits above 15 set anywhere in the mask
+    unsigned short w, h;
+    uintptr_t    ptr;
+    bool         usedSizeField; // false => size looked wrong, fell back to capacity
+};
+
+bool InventoryIsReal(uintptr_t obj, LiveInv* info, char* firstId, int idCap) {
+    LiveInv v;
+    memset(&v, 0, sizeof(v));
+    v.maskPop = -1;
     uintptr_t ptr = 0;
-    if (!SafeRead(obj + kInvCountA, &count, 4)) { ++InvReasons[0]; return false; }
+    if (!SafeRead(obj + kInvStoreCap, &v.storeCap, 4)) { ++InvReasons[0]; return false; }
+    if (!SafeRead(obj + kInvStoreSize, &v.storeSize, 4)) { ++InvReasons[0]; return false; }
     if (!SafeRead(obj + kInvSlotsPtr, &ptr, 8)) { ++InvReasons[0]; return false; }
-    if (count == 0 || count > kInvMaxSlots) { ++InvReasons[1]; return false; }
+    if (v.storeCap == 0 || v.storeCap > kInvMaxSlots) { ++InvReasons[1]; return false; }
+
+    // Prefer size. Fall back to capacity when size is not a credible size, so that
+    // a wrong hypothesis degrades to the old behaviour instead of finding nothing
+    // -- and say which path was taken, per object, in the report.
+    v.usedSizeField = (v.storeSize >= 1 && v.storeSize <= v.storeCap);
+    unsigned int count = v.usedSizeField ? v.storeSize : v.storeCap;
+    v.walked = count;
+
     if (!Readable(ptr, (size_t)count * kElemStride)) { ++InvReasons[2]; return false; }
     int items = 0;
     for (unsigned int k = 0; k < count; ++k) {
@@ -1663,8 +1744,128 @@ bool InventoryIsReal(uintptr_t obj, unsigned int* slotsOut, char* firstId, int i
         ++items;
     }
     if (!items) { ++InvReasons[4]; return false; }
-    if (slotsOut) *slotsOut = count;
+
+    // The tail we used to walk. If capacity really is an allocation then most of
+    // this is not element-shaped, and that is the whole argument for the change.
+    if (v.usedSizeField && v.storeCap > v.storeSize) {
+        v.tailTotal = (int)(v.storeCap - v.storeSize);
+        if (Readable(ptr + (uintptr_t)v.storeSize * kElemStride,
+                     (size_t)v.tailTotal * kElemStride)) {
+            for (unsigned int k = v.storeSize; k < v.storeCap; ++k)
+                if (SlotShape(ptr + (uintptr_t)k * kElemStride, 0, 0) == 0)
+                    ++v.tailMalformed;
+        } else {
+            v.tailMalformed = v.tailTotal;   // unreadable is the strongest form of it
+        }
+    }
+
+    SafeRead(obj + kInvCapacity, &v.capacityField, 2);
+    v.capacityField = (short)v.capacityField;
+    SafeRead(obj + kInvGridW, &v.w, 2);
+    SafeRead(obj + kInvGridH, &v.h, 2);
+    SafeRead(obj + kInvHistCap, &v.histCap, 4);
+    SafeRead(obj + kInvHistSize, &v.histSize, 4);
+
+    // The ownership mask, read on faith and reported as data. If the prediction
+    // holds, maskPop equals capacityField and maskHighBits is 0.
+    if (obj > kInvMaskBack && Readable(obj - kInvMaskBack, kInvMaskWords * 8)) {
+        int pop = 0;
+        for (unsigned int k = 0; k < kInvMaskWords; ++k) {
+            unsigned long long word = 0;
+            if (!SafeRead(obj - kInvMaskBack + (uintptr_t)k * 8, &word, 8)) { pop = -1; break; }
+            if (word >> 16) v.maskHighBits = 1;
+            pop += PopCount64(word);
+        }
+        v.maskPop = pop;
+    }
+
+    v.items = items;
+    v.ptr = ptr;
+    if (info) *info = v;
     return true;
+}
+
+// Do the validated stores lie on a lattice?
+//
+// ReNMS reconstructs the runtime cGcPlayerState with its inventories INLINE in
+// fixed arrays -- 28 general, 7 + 7 exocraft, and 12 + 12 + 12 for ships -- so a
+// real store's address should be base + k*sizeof(cGcInventoryStore). If that shows
+// up, an inventory is named by its INDEX and contents-correlation stops being
+// necessary. The 12 and the 7 are independently confirmed against Nick's 7.03
+// save, so the shape is worth testing even though the offsets are 4.13.
+//
+// Successive gaps will NOT be constant: we only keep stores holding at least one
+// item, so members are missing and the gaps are multiples of the stride. Hence
+// histogram the pairwise differences, then test lattice membership of the best
+// few -- do not look for runs of equal gaps.
+void ReportFixedArrays(std::string& rep, std::vector<uintptr_t> hits) {
+    AppendReport(rep,
+        "\r\n  FIXED-ARRAY TEST -- do the validated stores lie on a lattice?\r\n");
+    if (hits.size() < 3) {
+        AppendReport(rep, "    too few stores to say anything.\r\n");
+        return;
+    }
+    std::sort(hits.begin(), hits.end());
+    // O(n^2) over a bounded prefix. This runs after a multi-minute scan, so the
+    // cost does not matter -- but an unbounded n does.
+    const size_t kMaxN = 1500;
+    const uintptr_t kMaxGap = 0x40000;      // 28 stores of a few hundred bytes each
+    size_t n = hits.size() < kMaxN ? hits.size() : kMaxN;
+    std::vector<uintptr_t> gaps;
+    gaps.reserve(1 << 14);
+    for (size_t i = 0; i < n; ++i)
+        for (size_t j = i + 1; j < n; ++j) {
+            uintptr_t d = hits[j] - hits[i];
+            if (d > kMaxGap) break;
+            if (d == 0 || (d & 7)) continue;
+            gaps.push_back(d);
+        }
+    if (gaps.empty()) {
+        AppendReport(rep, "    no two stores within 256 KB of each other.\r\n");
+        return;
+    }
+    std::sort(gaps.begin(), gaps.end());
+    std::vector<std::pair<unsigned int, uintptr_t> > byCount;   // (count, gap)
+    for (size_t i = 0; i < gaps.size();) {
+        size_t j = i;
+        while (j < gaps.size() && gaps[j] == gaps[i]) ++j;
+        byCount.push_back(std::make_pair((unsigned int)(j - i), gaps[i]));
+        i = j;
+    }
+    std::sort(byCount.begin(), byCount.end());
+    std::reverse(byCount.begin(), byCount.end());
+
+    AppendReport(rep, Fmt("    %llu stores, %llu distinct gaps under 256 KB\r\n"
+                          "    most common gaps:\r\n",
+                          (unsigned long long)hits.size(),
+                          (unsigned long long)byCount.size()));
+    for (size_t i = 0; i < byCount.size() && i < 10; ++i)
+        AppendReport(rep, Fmt("      0x%-6llX x%u\r\n",
+                              (unsigned long long)byCount[i].second, byCount[i].first));
+
+    // For the best few gaps, how many stores sit on that lattice from some anchor?
+    // A stride that is really sizeof(cGcInventoryStore) should collect a whole
+    // fixed array; a coincidental gap collects two or three.
+    for (size_t g = 0; g < byCount.size() && g < 3; ++g) {
+        uintptr_t stride = byCount[g].second;
+        size_t best = 0, bestAt = 0;
+        for (size_t i = 0; i < n; ++i) {
+            size_t on = 0;
+            for (size_t j = i; j < n; ++j) {
+                uintptr_t d = hits[j] - hits[i];
+                if (d > stride * 64) break;
+                if (d % stride == 0) ++on;
+            }
+            if (on > best) { best = on; bestAt = i; }
+        }
+        AppendReport(rep, Fmt(
+            "    stride 0x%llX: best lattice holds %llu stores from 0x%llX\r\n",
+            (unsigned long long)stride, (unsigned long long)best,
+            (unsigned long long)hits[bestAt]));
+    }
+    AppendReport(rep,
+        "    A stride that collects 28, 12 or 7 stores is sizeof(cGcInventoryStore)\r\n"
+        "    and names them by index. One that collects 2 or 3 is a coincidence.\r\n");
 }
 
 // Live inventories, by the layout measured against the running game.
@@ -1672,10 +1873,14 @@ int FindLiveInventories(std::string& rep) {
     AppendReport(rep,
         "PHASE L -- live inventories, by the measured runtime layout\r\n"
         "----------------------------------------------------------------\r\n"
-        "  The runtime object is NOT cGcInventoryContainer: Name, Version, IsCool,\r\n"
-        "  Width and Height all read zero in the live one. What identifies it is the\r\n"
-        "  slot count appearing twice, at +0x08 and +0x18, around a pointer at +0x10\r\n"
-        "  to an array where EVERY declared slot parses as an element.\r\n\r\n");
+        "  The runtime object is cGcInventoryStore, not cGcInventoryContainer. What\r\n"
+        "  identifies it is a capacity appearing twice, at +0x08 and +0x18, around a\r\n"
+        "  pointer at +0x10 to an array where every slot parses as an element.\r\n"
+        "  This build walks size(+0x0C), not capacity(+0x08) -- the earlier one read\r\n"
+        "  past the end of every inventory -- and additionally reports miCapacity,\r\n"
+        "  the history vector, the -0x80 ownership mask and a lattice test, all of\r\n"
+        "  which are UNVERIFIED against the live game and none of which can reject\r\n"
+        "  an inventory.\r\n\r\n");
 
     ULONG_PTR stackLo = 0, stackHi = 0;
     GetCurrentThreadStackLimits(&stackLo, &stackHi);
@@ -1708,28 +1913,44 @@ int FindLiveInventories(std::string& rep) {
 
     AppendReport(rep, Fmt(
         "  scanned %.1f MB (%llu regions faulted)\r\n"
-        "  %u had a plausible count at +0x08, %u also matched at +0x18,\r\n"
+        "  %u had a plausible capacity at +0x08, %u also matched at +0x18,\r\n"
         "  %u also had a grid of 1..64 per side, %u also a usable pointer at +0x10\r\n"
-        "  -> %llu candidates\r\n",
+        "  -> %llu candidates\r\n"
+        "  of those, %u also had 1 <= size(+0x0C) <= capacity(+0x08) -- the\r\n"
+        "  invariant this build reads but does not yet trust\r\n",
         scanned / 1048576.0, (unsigned long long)faultedRegions,
-        stage[0], stage[1], stage[3], stage[2], (unsigned long long)cand.size()));
+        stage[0], stage[1], stage[3], stage[2], (unsigned long long)cand.size(),
+        stage[4]));
 
     int found = 0;
+    int fellBack = 0, maskAgreed = 0, maskRead = 0, tailWasStale = 0;
+    std::vector<uintptr_t> hits;
     memset(InvReasons, 0, sizeof(InvReasons));
     for (size_t i = 0; i < cand.size(); ++i) {
-        unsigned int slots = 0;
+        LiveInv v;
         char firstId[24] = {0};
-        if (!InventoryIsReal(cand[i], &slots, firstId, sizeof(firstId))) continue;
+        if (!InventoryIsReal(cand[i], &v, firstId, sizeof(firstId))) continue;
         ++found;
+        hits.push_back(cand[i]);
+        if (!v.usedSizeField) ++fellBack;
+        if (v.maskPop >= 0) {
+            ++maskRead;
+            if (v.maskPop == v.capacityField && !v.maskHighBits) ++maskAgreed;
+        }
+        if (v.tailTotal > 0 && v.tailMalformed > 0) ++tailWasStale;
         if (found > 200) continue;
-        unsigned short w = 0, h = 0;
-        uintptr_t ptr = 0;
-        SafeRead(cand[i] + kInvGridW, &w, 2);
-        SafeRead(cand[i] + kInvGridH, &h, 2);
-        SafeRead(cand[i] + kInvSlotsPtr, &ptr, 8);
-        AppendReport(rep, Fmt("\r\n  0x%llX  %u slots, grid %ux%u, array 0x%llX\r\n    ",
-                              (unsigned long long)cand[i], slots, w, h,
-                              (unsigned long long)ptr));
+        unsigned int slots = v.walked;
+        uintptr_t ptr = v.ptr;
+        AppendReport(rep, Fmt(
+            "\r\n  0x%llX  grid %ux%u  miCapacity %d  store %u/%u used/alloc%s\r\n"
+            "    history %u/%u  mask popcount %d%s  tail past size: %d of %d not"
+            " element-shaped\r\n    ",
+            (unsigned long long)cand[i], v.w, v.h, v.capacityField,
+            v.storeSize, v.storeCap, v.usedSizeField ? "" : "  (SIZE LOOKED WRONG"
+            " -- walked the allocation instead)",
+            v.histSize, v.histCap, v.maskPop,
+            v.maskHighBits ? " (bits above 15 set -- prediction broken)" : "",
+            v.tailMalformed, v.tailTotal));
         int shown = 0;
         for (unsigned int k = 0; k < slots && shown < 10; ++k) {
             uintptr_t ea = ptr + (uintptr_t)k * kElemStride;
@@ -1754,10 +1975,19 @@ int FindLiveInventories(std::string& rep) {
         "    a slot was malformed   %u\r\n"
         "    every slot was empty   %u\r\n",
         InvReasons[0], InvReasons[1], InvReasons[2], InvReasons[3], InvReasons[4]));
-    AppendReport(rep, Fmt("\r\n  %d objects held a fully-parsing slot array with items\r\n"
-                          "  (identify which is which by CONTENTS -- they sit at irregular\r\n"
-                          "   offsets in one allocation, so there is no index to rely on)\r\n\r\n",
-                          found));
+    AppendReport(rep, Fmt(
+        "\r\n  %d objects held a fully-parsing slot array with items\r\n"
+        "\r\n  THE THREE THINGS THIS RUN IS TESTING\r\n"
+        "    1. size(+0x0C) is the element count, not capacity(+0x08):\r\n"
+        "       %d of %d had to fall back to capacity, and %d of %d had a tail\r\n"
+        "       past size that is NOT element-shaped. A high tail figure and a\r\n"
+        "       low fallback figure together confirm it.\r\n"
+        "    2. the ownership mask at -0x80: %d of %d readable, %d of those had\r\n"
+        "       popcount == miCapacity with no bits above 15.\r\n"
+        "    3. whether the stores lie on a lattice -- below.\r\n",
+        found, fellBack, found, tailWasStale, found, maskRead, found, maskAgreed));
+    ReportFixedArrays(rep, hits);
+    AppendReport(rep, "\r\n");
     return found;
 }
 
