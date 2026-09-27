@@ -995,6 +995,10 @@ constexpr size_t kContVersion = 0x50;
 constexpr size_t kContWidth   = 0x54;
 constexpr size_t kContName    = 0x58;     // string256
 constexpr size_t kContIsCool  = 0x158;
+constexpr size_t kContBaseStats   = 0x00;   // dynarray cGcInventoryBaseStatEntry
+constexpr size_t kContSpecial     = 0x20;   // dynarray cGcInventorySpecialSlot
+constexpr size_t kContValidIdx    = 0x30;   // dynarray cGcInventoryIndex
+constexpr size_t kContFromTech    = 0x48;
 constexpr size_t kContStackGroup = 0x4C;
 constexpr size_t kContSize     = 0x159;
 
@@ -1150,6 +1154,206 @@ bool ContainerName(uintptr_t cont, std::string* out) {
     return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// Searching for the CONTAINER rather than the element.
+//
+// The first attempt anchored on cGcInventoryElement, because a 16-byte ASCII item
+// id looked unmistakable. It was not. Against the real game it matched a table of
+// mission identifiers -- PROC_PRODS, WORMHUNT, EGG_PODS -- which also begin with a
+// 16-byte upper-case string followed by small integers. The validator was built
+// out of *absences* (nothing over a bound, nothing non-zero where padding
+// belongs), and a mostly-zero record satisfies every rule of that kind.
+//
+// A container is a far better anchor, because its signature is positive and
+// composite: four dynamic-array handles at 0x00/0x10/0x20/0x30, each a pointer
+// plus a count; then a row of small enums and integers; then 256 bytes that must
+// be a NUL-padded string; then a bool. And the rows and columns have to be big
+// enough to hold the slots the Slots handle claims -- a constraint no coincidence
+// satisfies.
+//
+// It is also much cheaper. Requiring Width at +0x54 to be a sane grid dimension
+// rejects almost everything in a single dword load, where the element scan had to
+// read fifty bytes per candidate.
+constexpr int kContReasonOk = 0;
+const char* const kContReasons[] = {
+    "ok", "unreadable", "width", "height", "version", "class/stackGroup",
+    "isCool", "name not a string256", "slots handle", "grid too small for slots",
+    "other handles",
+};
+
+bool HandleLooksLikeArray(const unsigned char* c, size_t off, uintptr_t* ptr,
+                          unsigned int* count) {
+    uintptr_t p = 0;
+    unsigned int n = 0;
+    memcpy(&p, c + off, 8);
+    memcpy(&n, c + off + 8, 4);
+    *ptr = p;
+    *count = n;
+    if (p == 0) return n == 0;                    // an empty array is legitimate
+    if (n > 100000) return false;
+    return Readable(p, 1);
+}
+
+int ValidateContainer(uintptr_t b, unsigned char* c, uintptr_t* slotsOut,
+                      unsigned int* slotCountOut, std::string* nameOut) {
+    if (!Readable(b, kContSize) || !SafeRead(b, c, kContSize)) return 1;
+    int width = 0, height = 0, version = 0, fromTech = 0;
+    unsigned int cls = 0, ssg = 0;
+    memcpy(&width, c + kContWidth, 4);
+    memcpy(&height, c + kContHeight, 4);
+    memcpy(&version, c + kContVersion, 4);
+    memcpy(&fromTech, c + kContFromTech, 4);
+    memcpy(&cls, c + kContClass, 4);
+    memcpy(&ssg, c + kContStackGroup, 4);
+    if (width < 1 || width > 4096) return 2;
+    if (height < 1 || height > 4096) return 3;
+    if (version < 0 || version > 10000) return 4;
+    if (cls > 255 || ssg > 255) return 5;
+    if (c[kContIsCool] > 1) return 6;
+    if (!ContainerName(b, nameOut)) return 7;
+
+    uintptr_t slots = 0;
+    unsigned int nslots = 0;
+    if (!HandleLooksLikeArray(c, kContSlots, &slots, &nslots)) return 8;
+    if (slots == 0 || nslots < 1 || nslots > 4096) return 8;
+    // The grid has to be able to hold what the array claims. This is the test that
+    // a coincidence fails.
+    if ((long long)width * height < (long long)nslots) return 9;
+    if (fromTech < 0 || fromTech > 4096) return 9;
+
+    uintptr_t p2 = 0, p3 = 0, p4 = 0;
+    unsigned int n2 = 0, n3 = 0, n4 = 0;
+    if (!HandleLooksLikeArray(c, kContBaseStats, &p2, &n2) ||
+        !HandleLooksLikeArray(c, kContSpecial, &p3, &n3) ||
+        !HandleLooksLikeArray(c, kContValidIdx, &p4, &n4)) return 10;
+
+    *slotsOut = slots;
+    *slotCountOut = nslots;
+    return kContReasonOk;
+}
+
+// Cheap pre-filter: one dword, and a grid dimension is a very narrow target.
+int ScanForContainerCandidates(uintptr_t base, size_t size, uintptr_t* out, int outMax,
+                               int* faulted, size_t* scanned) {
+    int n = 0;
+    *faulted = 0;
+    *scanned = 0;
+    if (outMax <= 0 || size < kContSize) return 0;
+    const unsigned char* p = (const unsigned char*)base;
+    const unsigned char* end = (const unsigned char*)(base + size - kContSize);
+    __try {
+        for (; p < end; p += 8) {
+            unsigned int w, h, ver;
+            memcpy(&w, p + kContWidth, 4);
+            if (w - 1u >= 4096u) continue;               // 1..4096, unsigned trick
+            memcpy(&h, p + kContHeight, 4);
+            if (h - 1u >= 4096u) continue;
+            if (p[kContIsCool] > 1) continue;
+            memcpy(&ver, p + kContVersion, 4);
+            if (ver > 10000u) continue;
+            out[n++] = (uintptr_t)p;
+            if (n >= outMax) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    *scanned = (size_t)((const unsigned char*)p - (const unsigned char*)base);
+    return n;
+}
+
+// Returns the number of containers reported.
+int FindContainers(std::string& rep) {
+    AppendReport(rep,
+        "PHASE 1 -- containers by their own signature\r\n"
+        "----------------------------------------------------------------\r\n");
+    ULONG_PTR stackLo = 0, stackHi = 0;
+    GetCurrentThreadStackLimits(&stackLo, &stackHi);
+
+    size_t scanned = 0, filtered = 0, sinceYield = 0, faultedRegions = 0;
+    size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
+    int reason[16] = {0};
+    int found = 0;
+    std::vector<uintptr_t> cand(65536);
+    std::vector<uintptr_t> reported;
+
+    for (size_t ri = 0; ri < g_regions.size(); ++ri) {
+        const Region& r = g_regions[ri];
+        if (r.type != MEM_PRIVATE) continue;
+        if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+        if (scanned >= budget) break;
+        int faulted = 0;
+        size_t did = 0;
+        int n = ScanForContainerCandidates(r.base, r.size, cand.data(), 65536,
+                                           &faulted, &did);
+        scanned += did;
+        sinceYield += did;
+        filtered += (size_t)n;
+        if (faulted) ++faultedRegions;
+        for (int k = 0; k < n; ++k) {
+            unsigned char c[kContSize];
+            uintptr_t slots = 0;
+            unsigned int nslots = 0;
+            std::string nm;
+            int why = ValidateContainer(cand[k], c, &slots, &nslots, &nm);
+            if (why < 16) ++reason[why];
+            if (why != kContReasonOk) continue;
+            // One container per Slots array: the game keeps working copies, and a
+            // second object over the same array is the same inventory.
+            bool dup = false;
+            for (uintptr_t s : reported) if (s == slots) { dup = true; break; }
+            if (dup) continue;
+            reported.push_back(slots);
+            ++found;
+
+            int width = 0, height = 0, version = 0;
+            unsigned int cls = 0, ssg = 0;
+            memcpy(&width, c + kContWidth, 4);
+            memcpy(&height, c + kContHeight, 4);
+            memcpy(&version, c + kContVersion, 4);
+            memcpy(&cls, c + kContClass, 4);
+            memcpy(&ssg, c + kContStackGroup, 4);
+            AppendReport(rep, Fmt(
+                "\r\n  CONTAINER at 0x%llX\r\n"
+                "    name=%s  width=%d height=%d version=%d class=%u stackGroup=%u isCool=%u\r\n"
+                "    slots array 0x%llX -- %u slots declared\r\n",
+                (unsigned long long)cand[k], nm.empty() ? "(no name)" : nm.c_str(),
+                width, height, version, cls, ssg, c[kContIsCool],
+                (unsigned long long)slots, nslots));
+            int listed = 0, occupied = 0;
+            for (unsigned int e = 0; e < nslots && e < 512; ++e) {
+                ElemView ev;
+                if (!ReadElem(slots + (size_t)e * kElemStride, &ev)) {
+                    AppendReport(rep, Fmt("      (slot %u did not read as an element)\r\n", e));
+                    break;
+                }
+                if (ev.empty) continue;
+                ++occupied;
+                if (listed < 60) {
+                    AppendReport(rep, Fmt(
+                        "      [%2d,%2d] %-18s %7d / %-7d  type=%u dmg=%.2f%s%s\r\n",
+                        ev.x, ev.y, ev.id, ev.amount, ev.maxAmount, ev.type, ev.damage,
+                        ev.installed ? " installed" : "", ev.added ? " auto" : ""));
+                    ++listed;
+                }
+            }
+            AppendReport(rep, Fmt("      (%d occupied of %u)\r\n", occupied, nslots));
+        }
+        if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+    }
+
+    AppendReport(rep, Fmt(
+        "\r\n  scanned %.1f MB, %llu positions passed the cheap filter,\r\n"
+        "  %d containers reported, %llu regions faulted\r\n"
+        "  why the rest were rejected:\r\n",
+        scanned / 1048576.0, (unsigned long long)filtered, found,
+        (unsigned long long)faultedRegions));
+    for (int i = 1; i < 11; ++i)
+        if (reason[i]) AppendReport(rep, Fmt("    %-26s %d\r\n", kContReasons[i], reason[i]));
+    AppendReport(rep, "\r\n");
+    return found;
+}
+
 void RunInstanceProbe(int runNo) {
     ULONGLONG t0 = GetTickCount64();
     std::string rep;
@@ -1170,6 +1374,31 @@ void RunInstanceProbe(int runNo) {
         "image this ran against is stamped below.\r\n\r\n"
         "build:   NMS.exe base 0x%llX  timestamp 0x%08lX\r\n",
         runNo, (unsigned long long)g_img.base, g_img.timeStamp));
+
+    int direct = FindContainers(rep);
+    if (direct > 0) {
+        AppendReport(rep, Fmt(
+            "VERDICT: INVENTORY FOUND\r\n"
+            "----------------------------------------------------------------\r\n"
+            "  %d containers found by their own signature; the element hunt below\r\n"
+            "  was not needed and did not run.\r\n"
+            "  probe took %llu ms\r\n",
+            direct, (unsigned long long)(GetTickCount64() - t0)));
+        WriteReportFile(outPath, rep);
+        logger::Pushf(Level::Info, "instprobe",
+                      "verdict INVENTORY FOUND: %d containers by container signature in "
+                      "%llu ms | detail in %s",
+                      direct, (unsigned long long)(GetTickCount64() - t0),
+                      ToUtf8(outPath).c_str());
+        g_regions.clear();
+        g_regions.shrink_to_fit();
+        g_exclude.clear();
+        return;
+    }
+    AppendReport(rep,
+        "  Nothing validated, so the element hunt below runs as a fallback and a\r\n"
+        "  diagnostic. Note that it matches non-inventory classes too: mission id\r\n"
+        "  tables look the same to it.\r\n\r\n");
 
     // ---- phase A: runs of inventory elements -------------------------------
     std::vector<Run> runs;
