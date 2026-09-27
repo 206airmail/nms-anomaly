@@ -59,6 +59,8 @@
 // frame needs unwinding -- which is a hard MSVC requirement, not a style choice.
 // Results come back through caller-provided fixed arrays for the same reason.
 #include "common.h"
+#define PSAPI_VERSION 2   // K32GetProcessMemoryInfo from kernel32, no psapi.lib
+#include <psapi.h>
 #include <vector>
 #include <string>
 #include <utility>
@@ -972,6 +974,44 @@ void RunProbe(int runNo) {
 
 // cGcInventoryElement -- tiled size 0x2A, but 0x30 as an array element, which is
 // the `size` the container's dynamic-array member declares.
+// ---- cGcPlayerStateData holds every inventory INLINE, back to back ----------
+//
+// Read out of the offline extraction (tools/nms_meta_extract.py), not guessed:
+// cGcPlayerStateData's 27 members of type cGcInventoryContainer occupy
+// 0x809D8 .. 0x82EF8 with no gap at all -- 27 x 0x160 = 0x2520 exactly. The
+// container is 0x159 bytes and 0x160 is that aligned up.
+//
+// Why this matters more than any leaf signature. Four attempts to find an
+// inventory by recognising one container or one element failed, because a single
+// record's fields are weak evidence: mostly-zero records satisfy any test built
+// from bounds, and the save editor's own notes say Width and Height LIE (a sold
+// ship reads 1x1, machinery 16x1) -- which is exactly the field
+// ScanForContainerCandidates filters on first, and it rejects the width 0 that
+// every unowned chest has.
+//
+// A run of 27 containers at a fixed stride is a different kind of evidence: it
+// is periodic structure, it cannot arise by coincidence, and it identifies the
+// owning object rather than one leaf. Once one run is found, all 263 members of
+// cGcPlayerStateData are at known offsets from it.
+constexpr size_t kContStride        = 0x160;    // container size aligned up
+constexpr size_t kPsdContainers     = 27;       // inline containers in the run
+constexpr size_t kPsdFirstContainer = 0x809D8;  // offset of the run within the class
+constexpr size_t kPsdRunBytes       = kPsdContainers * kContStride;
+
+// In offset order, which is the order they appear in memory -- NOT declaration
+// order and not alphabetical by accident: Chest10 really does precede Chest1.
+const char* const kPsdContainerNames[kPsdContainers] = {
+    "Chest10Inventory", "Chest1Inventory", "Chest2Inventory", "Chest3Inventory",
+    "Chest4Inventory", "Chest5Inventory", "Chest6Inventory", "Chest7Inventory",
+    "Chest8Inventory", "Chest9Inventory", "ChestMagic2Inventory",
+    "ChestMagicInventory", "CookingIngredientsInventory",
+    "CorvetteStorageInventory", "FishBaitBoxInventory", "FishPlatformInventory",
+    "FoodUnitInventory", "FreighterInventory", "FreighterInventory_Cargo",
+    "FreighterInventory_TechOnly", "GraveInventory", "Inventory",
+    "Inventory_Cargo", "Inventory_TechOnly", "RocketLockerInventory",
+    "ShipInventory", "WeaponInventory",
+};
+
 constexpr size_t kElemStride    = 0x30;
 constexpr size_t kElemId        = 0x00;   // string16, NUL-padded
 constexpr size_t kElemIndexX    = 0x10;   // cGcInventoryIndex { X, Y } -- 8 bytes, not 12
@@ -1262,6 +1302,65 @@ int ScanForContainerCandidates(uintptr_t base, size_t size, uintptr_t* out, int 
     return n;
 }
 
+// A dynamic-array handle: {pointer, count, capacity} in 0x10 bytes. `populated`
+// distinguishes a handle that owns something from a well-formed empty one -- both
+// are valid, and an unowned chest is legitimately empty, so emptiness is never a
+// rejection on its own.
+int HandleShape(const unsigned char* p, int* populated) {
+    unsigned long long ptr;
+    unsigned int count, cap;
+    memcpy(&ptr, p, 8);
+    memcpy(&count, p + 8, 4);
+    memcpy(&cap, p + 12, 4);
+    *populated = 0;
+    if (ptr == 0) return (count == 0 && cap == 0) ? 1 : 0;
+    if (ptr & 7) return 0;                                   // 8-aligned allocation
+    if (ptr < 0x10000ull || ptr > 0x7FFFFFFFFFFFull) return 0;   // user-space only
+    if (cap == 0 || cap > 65536u || count > cap) return 0;
+    *populated = 1;
+    return 1;
+}
+
+// Positions that look like a *player-visible* container. The predicate is the
+// save editor's own documented rule -- a real container has a non-empty
+// ValidSlotIndices -- rather than anything to do with Width or Height. Four
+// well-formed array handles in a row at +0x00/+0x10/+0x20/+0x30 is the shape;
+// two of them populated is the evidence.
+//
+// Counters, not rejections: every stage reports how many positions it dropped,
+// because "554,182 candidates rejected, no reason given" is how attempt 2 wasted
+// a whole session.
+int ScanForContainerRuns(uintptr_t base, size_t size, uintptr_t* out, int outMax,
+                         unsigned int* stage, int* faulted, size_t* scanned) {
+    int n = 0;
+    *faulted = 0;
+    *scanned = 0;
+    if (outMax <= 0 || size < kContSize) return 0;
+    const unsigned char* p = (const unsigned char*)base;
+    const unsigned char* end = (const unsigned char*)(base + size - kContSize);
+    __try {
+        for (; p < end; p += 8) {
+            int popStats = 0, popSlots = 0, popSpecial = 0, popValid = 0;
+            if (!HandleShape(p + kContBaseStats, &popStats)) continue;
+            ++stage[0];
+            if (!HandleShape(p + kContSlots, &popSlots)) continue;
+            ++stage[1];
+            if (!HandleShape(p + kContSpecial, &popSpecial)) continue;
+            ++stage[2];
+            if (!HandleShape(p + kContValidIdx, &popValid)) continue;
+            ++stage[3];
+            if (!popSlots || !popValid) continue;   // a container someone can see
+            ++stage[4];
+            out[n++] = (uintptr_t)p;
+            if (n >= outMax) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    *scanned = (size_t)((const unsigned char*)p - (const unsigned char*)base);
+    return n;
+}
+
 // Returns the number of containers reported.
 int FindContainers(std::string& rep) {
     AppendReport(rep,
@@ -1354,6 +1453,153 @@ int FindContainers(std::string& rep) {
     return found;
 }
 
+// Find cGcPlayerStateData by the periodicity of its inline container run.
+int FindPlayerStateData(std::string& rep) {
+    AppendReport(rep,
+        "PHASE P -- cGcPlayerStateData by its run of 27 inline containers\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  Not a leaf signature. 27 containers at a 0x160 stride spanning 0x2520\r\n"
+        "  bytes is periodic structure, and periodic structure does not happen by\r\n"
+        "  accident. Width and Height are deliberately NOT tested: they lie.\r\n\r\n");
+
+    ULONG_PTR stackLo = 0, stackHi = 0;
+    GetCurrentThreadStackLimits(&stackLo, &stackHi);
+
+    std::vector<uintptr_t> cand;
+    cand.reserve(1 << 18);
+    std::vector<uintptr_t> batch(1 << 15);
+    unsigned int stage[8] = {0};
+    size_t scanned = 0, sinceYield = 0, faultedRegions = 0;
+    size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
+
+    g_exclude.clear();
+    Exclude((uintptr_t)stackLo, (uintptr_t)stackHi);
+
+    for (size_t ri = 0; ri < g_regions.size(); ++ri) {
+        const Region& r = g_regions[ri];
+        if (r.type != MEM_PRIVATE) continue;
+        if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+        if (scanned >= budget) break;
+        int faulted = 0;
+        size_t did = 0;
+        int n = ScanForContainerRuns(r.base, r.size, batch.data(), (int)batch.size(),
+                                     stage, &faulted, &did);
+        if (faulted) ++faultedRegions;
+        for (int k = 0; k < n; ++k)
+            if (!Excluded(batch[k])) cand.push_back(batch[k]);
+        scanned += did;
+        sinceYield += did;
+        if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+    }
+
+    AppendReport(rep, Fmt(
+        "  scanned %.1f MB (%llu regions faulted)\r\n"
+        "  shape filter: %u had a BaseStatValues handle, %u also Slots, %u also\r\n"
+        "  SpecialSlots, %u also ValidSlotIndices, %u had both populated\r\n"
+        "  -> %llu candidate containers\r\n\r\n",
+        scanned / 1048576.0, (unsigned long long)faultedRegions,
+        stage[0], stage[1], stage[2], stage[3], stage[4],
+        (unsigned long long)cand.size()));
+
+    if (cand.empty()) {
+        AppendReport(rep, "  Nothing had four array handles in a row. Either the\r\n"
+                          "  handle layout {ptr,count,capacity} is wrong, or no save is\r\n"
+                          "  loaded.\r\n\r\n");
+        return 0;
+    }
+
+    // Cluster by stride. Sorted, the window for one object is 0x2520 wide, so this
+    // stays linear in practice rather than quadratic.
+    std::sort(cand.begin(), cand.end());
+    cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+
+    struct Cluster { uintptr_t lo; int members; int span; };
+    std::vector<Cluster> clusters;
+    for (size_t i = 0; i < cand.size(); ++i) {
+        int members = 1, span = 0;
+        for (size_t j = i + 1; j < cand.size(); ++j) {
+            uintptr_t d = cand[j] - cand[i];
+            if (d > kPsdRunBytes) break;
+            if (d % kContStride == 0) { ++members; span = (int)(d / kContStride); }
+        }
+        if (members >= 2) clusters.push_back(Cluster{cand[i], members, span});
+    }
+    std::sort(clusters.begin(), clusters.end(),
+              [](const Cluster& a, const Cluster& b) { return a.members > b.members; });
+
+    AppendReport(rep, Fmt("  %llu clusters of 2+ containers at the 0x160 stride\r\n",
+                          (unsigned long long)clusters.size()));
+    int bestMembers = clusters.empty() ? 0 : clusters[0].members;
+    int bestExtent = clusters.empty() ? 0 : clusters[0].span + 1;
+    for (size_t i = 0; i < clusters.size() && i < 8; ++i)
+        AppendReport(rep, Fmt("    0x%llX  %d members within %d strides\r\n",
+                              (unsigned long long)clusters[i].lo,
+                              clusters[i].members, clusters[i].span + 1));
+    AppendReport(rep, "\r\n");
+
+    if (bestMembers < 3) return 0;
+
+    // The best cluster, member by member, with what is actually in each. The
+    // absolute index within the run is NOT assumed: the lowest member could be any
+    // of the 27, so every member is reported with its stride offset from the lowest
+    // and the contents are left to identify it. Guessing the alignment and printing
+    // a confident wrong name is how earlier phases produced junk that read as data.
+    const Cluster& c = clusters[0];
+    AppendReport(rep, Fmt(
+        "  best cluster at 0x%llX: %d populated containers spanning %d strides.\r\n"
+        "  The SPAN is the finding, not the count -- an unowned storage chest has an\r\n"
+        "  empty ValidSlotIndices and legitimately does not appear, so a full run of\r\n"
+        "  27 will normally have fewer than 27 populated members.\r\n"
+        "  Contents below; the run's absolute position is not assumed, so names are\r\n"
+        "  not claimed yet -- an exosuit with known items in it pins which stride\r\n"
+        "  index is which container.\r\n",
+        (unsigned long long)c.lo, c.members, c.span + 1));
+    for (int k = 0; k <= c.span; ++k) {
+        uintptr_t a = c.lo + (uintptr_t)k * kContStride;
+        if (!Readable(a, kContSize)) continue;
+        uintptr_t slotsPtr = 0;
+        unsigned int slotCount = 0, validCount = 0, w = 0, h = 0, cls = 0;
+        if (!SafeRead(a + kContSlots, &slotsPtr, 8)) continue;
+        SafeRead(a + kContSlotCount, &slotCount, 4);
+        SafeRead(a + kContValidIdx + 8, &validCount, 4);
+        SafeRead(a + kContWidth, &w, 4);
+        SafeRead(a + kContHeight, &h, 4);
+        SafeRead(a + kContClass, &cls, 4);
+        char name[68] = {0};
+        SafeRead(a + kContName, name, 64);
+        for (int z = 0; z < 64; ++z)
+            if (name[z] && (name[z] < 0x20 || (unsigned char)name[z] > 0x7E)) { name[z] = 0; break; }
+        AppendReport(rep, Fmt(
+            "\r\n   [+%2d] 0x%llX  slots=%u valid=%u  width=%u height=%u class=%u  name=%.40s\r\n",
+            k, (unsigned long long)a, slotCount, validCount, w, h, cls, name));
+        if (!slotsPtr || slotCount == 0 || slotCount > 4096) continue;
+        int shownIds = 0;
+        AppendReport(rep, "         ");
+        for (unsigned int e = 0; e < slotCount && shownIds < 10; ++e) {
+            ElemView ev;
+            if (!ReadElem(slotsPtr + (uintptr_t)e * kElemStride, &ev)) break;
+            if (ev.empty) continue;
+            AppendReport(rep, Fmt("%s%s x%d", shownIds ? ", " : "", ev.id, ev.amount));
+            ++shownIds;
+        }
+        AppendReport(rep, shownIds ? "\r\n" : "(no readable items)\r\n");
+    }
+
+    // Every alignment the cluster permits, with the cGcPlayerStateData base each
+    // one implies. One of these is right; the contents above say which.
+    AppendReport(rep, Fmt(
+        "\r\n  If the lowest member is run index i, the class base is at\r\n"
+        "  0x%llX - 0x%X - i*0x160:\r\n", (unsigned long long)c.lo,
+        (unsigned)kPsdFirstContainer));
+    for (int i = 0; i < (int)kPsdContainers && i + c.span < (int)kPsdContainers; ++i)
+        AppendReport(rep, Fmt("    i=%-2d -> base 0x%llX   (lowest member would be %s)\r\n",
+                              i, (unsigned long long)(c.lo - kPsdFirstContainer
+                                                      - (uintptr_t)i * kContStride),
+                              kPsdContainerNames[i]));
+    AppendReport(rep, "\r\n");
+    return bestExtent;
+}
+
 void RunInstanceProbe(int runNo) {
     ULONGLONG t0 = GetTickCount64();
     std::string rep;
@@ -1375,7 +1621,43 @@ void RunInstanceProbe(int runNo) {
         "build:   NMS.exe base 0x%llX  timestamp 0x%08lX\r\n",
         runNo, (unsigned long long)g_img.base, g_img.timeStamp));
 
+    // Phase P first, and deliberately: it looks for the OWNER of the inventories
+    // rather than for an inventory. Four attempts at leaf signatures failed, and
+    // the run of 27 inline containers is the one piece of structure in this object
+    // graph that cannot be produced by coincidence.
+    int psd = FindPlayerStateData(rep);
     int direct = FindContainers(rep);
+
+    // A run of containers at the right stride outranks any count of separately
+    // matched ones: 27 of them is cGcPlayerStateData itself, and that is the
+    // difference between "an inventory exists" and "we can address all of them".
+    if (psd >= 3) {
+        const char* how = psd >= (int)kPsdContainers
+            ? "  The full run: the cluster spans all 27 strides. This is\r\n"
+              "  cGcPlayerStateData, and every one of its 263 members is now at a\r\n"
+              "  known offset from it.\r\n"
+            : "  A partial run -- the cluster spans fewer than 27 strides. Real, but\r\n"
+              "  either the scan budget cut it short or the containers at the ends are\r\n"
+              "  empty, which is normal and leaves the true extent unknown.\r\n";
+        AppendReport(rep, Fmt(
+            "VERDICT: CONTAINER RUN FOUND (spans %d of 27 strides at 0x160)\r\n"
+            "----------------------------------------------------------------\r\n"
+            "%s"
+            "  %d containers also matched their own signature independently.\r\n"
+            "  probe took %llu ms\r\n",
+            psd, how, direct, (unsigned long long)(GetTickCount64() - t0)));
+        WriteReportFile(outPath, rep);
+        logger::Pushf(Level::Info, "instprobe",
+                      "verdict CONTAINER RUN FOUND: a run spanning %d of 27 strides at "
+                      "0x160 (%d containers by signature) in %llu ms | detail in %s",
+                      psd, direct, (unsigned long long)(GetTickCount64() - t0),
+                      ToUtf8(outPath).c_str());
+        g_regions.clear();
+        g_regions.shrink_to_fit();
+        g_exclude.clear();
+        return;
+    }
+
     if (direct > 0) {
         AppendReport(rep, Fmt(
             "VERDICT: INVENTORY FOUND\r\n"
@@ -1783,7 +2065,19 @@ void RunInstanceProbe(int runNo) {
 //   neither       -> the search itself is broken, and nothing else here means
 //                    anything
 constexpr int kMaxHuntNames = 128;
-constexpr int kMaxHuntHitsPerName = 6;
+// Six was too few. Run 1 found six heap hits for every id and all six came from
+// one place -- two from the probe's own stack copy of the names file, four from a
+// single 0x10-stride lookup table -- so the quota was exhausted before anything
+// interesting could be reached. The cap exists to bound the report, not the search.
+constexpr int kMaxHuntHitsPerName = 32;
+
+// The patterns live here, in one static block, for one reason: a hunt that stores
+// the strings it is looking for in freshly allocated memory will find them. Run 1
+// did exactly that -- two of the six RED2 hits were the probe's own 8 KB file
+// buffer, with "# Real internal ids, cross-checked against" legible beside them.
+// One static arena is one range to exclude.
+char g_huntArena[kMaxHuntNames * 32];
+size_t g_huntArenaUsed = 0;
 
 // One pass over memory testing every pattern at each position, instead of one pass
 // per pattern. The first version took nineteen minutes on eighteen names because it
@@ -1804,11 +2098,18 @@ struct HuntSet {
 void BuildHuntSet(HuntSet* hs, const std::vector<std::string>& names) {
     memset(hs->nByFirst, 0, sizeof(hs->nByFirst));
     hs->count = 0;
+    g_huntArenaUsed = 0;
     for (auto& n : names) {
         if (n.empty() || hs->count >= kMaxHuntNames) continue;
+        if (n.size() + 1 > sizeof(g_huntArena) - g_huntArenaUsed) continue;
         unsigned char c0 = (unsigned char)n[0];
         if (hs->nByFirst[c0] >= 16) continue;      // 16 patterns per first byte is plenty
-        hs->pat[hs->count] = n.c_str();
+        // Copy into the arena rather than pointing at the caller's std::string, whose
+        // buffer is heap memory this very scan will walk over.
+        char* slot = g_huntArena + g_huntArenaUsed;
+        memcpy(slot, n.c_str(), n.size() + 1);
+        g_huntArenaUsed += n.size() + 1;
+        hs->pat[hs->count] = slot;
         hs->len[hs->count] = (int)n.size();
         hs->byFirst[c0][hs->nByFirst[c0]++] = (unsigned char)hs->count;
         ++hs->count;
@@ -1852,17 +2153,72 @@ int ScanForPatterns(const HuntSet* hs, uintptr_t base, size_t size,
     return n;
 }
 
+// How far apart are the id strings around this hit?
+//
+// This is the distinction run 1 could not draw. Every one of its heap hits was an
+// id 0x10 bytes from the next id and nothing else between them -- a plain lookup
+// table of every substance name in the game, which exists whether or not the
+// player owns any of them. A live inventory slot is 0x30 apart with numbers in
+// between. Both are "an id as text on the heap", and only the stride separates
+// them, so a report that prints hex without the stride leaves the actual question
+// open. Returns the smallest stride that has an id neighbour, or 0 for none.
+// An id at exactly this address, tolerating the '^' that marks an installed
+// technology. ReadIdentifierRaw rejects '^' -- correctly, for its own callers --
+// and without this the stride of an element array whose neighbour happens to be
+// a technology came back as a multiple of the true one.
+bool IdentifierAt(uintptr_t a) {
+    char buf[24];
+    if (!Readable(a, 18)) return false;
+    // It must START here, not merely continue here. Without this the stride test
+    // matches the TAIL of a neighbouring id: the control put ^LAUNCHFUEL 0x30
+    // before FERRITE_DUST and 0x28 before it landed on "UEL", so a 0x30 element
+    // array was measured as 0x28. Every stride in a real save would have been
+    // just as arbitrary. Same whole-token rule the pattern scanner uses.
+    if (a > 0x10000ull) {
+        unsigned char before = 0;
+        if (SafeRead(a - 1, &before, 1) && before &&
+            ((before >= 'A' && before <= 'Z') || (before >= 'a' && before <= 'z') ||
+             (before >= '0' && before <= '9') || before == '_' || before == '^'))
+            return false;
+    }
+    if (ReadIdentifierRaw(a, buf, 17) >= 2) return true;
+    unsigned char c = 0;
+    if (!SafeRead(a, &c, 1) || c != '^') return false;
+    return ReadIdentifierRaw(a + 1, buf, 17) >= 2;
+}
+
+int NeighbourStride(uintptr_t at) {
+    static const int kTry[] = { 0x10, 0x18, 0x20, 0x28, 0x30, 0x38,
+                                0x40, 0x48, 0x50, 0x58, 0x60, 0x68, 0x70 };
+    for (int i = 0; i < (int)(sizeof(kTry) / sizeof(kTry[0])); ++i) {
+        int s = kTry[i];
+        if (IdentifierAt(at + (uintptr_t)s)) return s;
+        if (at > (uintptr_t)s && IdentifierAt(at - (uintptr_t)s)) return s;
+    }
+    return 0;
+}
+
+uintptr_t g_huntFileLo = 0, g_huntFileHi = 0, g_huntTextLo = 0, g_huntTextHi = 0;
+
 std::vector<std::string> ReadHuntList() {
     std::vector<std::string> out;
     std::wstring path = g_outDir + L"probe_strings.txt";
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h != INVALID_HANDLE_VALUE) {
-        std::string text;
-        char buf[8192];
+        // Both buffers are static and their ranges are excluded below. A local
+        // `char buf[8192]` here is what produced run 1's phantom RED2 hits: the
+        // ids went on the probe thread's own stack and the scan found them there.
+        static std::string text;
+        static char buf[8192];
+        text.clear();
         DWORD got = 0;
         while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got) text.append(buf, got);
         CloseHandle(h);
+        g_huntFileLo = (uintptr_t)buf;
+        g_huntFileHi = (uintptr_t)buf + sizeof(buf);
+        g_huntTextLo = (uintptr_t)text.data();
+        g_huntTextHi = (uintptr_t)text.data() + text.capacity() + 1;
         size_t i = 0;
         while (i < text.size() && (int)out.size() < kMaxHuntNames) {
             size_t e = text.find_first_of("\r\n", i);
@@ -1914,13 +2270,34 @@ void RunStringHunt(int runNo) {
         runNo, (unsigned long long)g_img.base, g_img.timeStamp,
         (unsigned long long)names.size()));
 
-    struct HuntHit { uintptr_t at; int nameIdx; bool image; };
+    struct HuntHit { uintptr_t at; int nameIdx; bool image; int stride; };
     std::vector<HuntHit> hits;
     size_t scanned = 0, sinceYield = 0;
     size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
 
     HuntSet hs;
     BuildHuntSet(&hs, names);
+
+    // Everything holding a copy of what we are hunting for. Run 1 skipped this step
+    // entirely -- RunStringHunt never touched g_exclude -- and duly reported the
+    // probe's own file buffer as a heap hit, twice.
+    g_exclude.clear();
+    Exclude((uintptr_t)g_huntArena, (uintptr_t)g_huntArena + sizeof(g_huntArena));
+    Exclude(g_huntFileLo, g_huntFileHi);
+    Exclude(g_huntTextLo, g_huntTextHi);
+    Exclude((uintptr_t)stackLo, (uintptr_t)stackHi);
+    Exclude((uintptr_t)names.data(),
+            (uintptr_t)names.data() + names.size() * sizeof(std::string));
+    for (auto& n : names)                      // long names allocate outside the vector
+        Exclude((uintptr_t)n.data(), (uintptr_t)n.data() + n.capacity() + 1);
+
+    // 8 GB at 12 MB/s in run 1 is ~80 ns per byte, which no table-lookup loop costs.
+    // The suspect is paging: every byte of the game's private memory gets touched,
+    // most of it cold. A fault count settles that instead of guessing at the loop.
+    PROCESS_MEMORY_COUNTERS pmc0 = {};
+    pmc0.cb = sizeof(pmc0);
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc0, sizeof(pmc0));
+    ULONGLONG scanMs = 0;
     constexpr int kHitsPerRegion = 4096;
     std::vector<uintptr_t> at(kHitsPerRegion);
     std::vector<int> pat(kHitsPerRegion);
@@ -1937,14 +2314,17 @@ void RunStringHunt(int runNo) {
             }
             int faulted = 0;
             size_t did = 0;
+            ULONGLONG ts = GetTickCount64();
             int n = ScanForPatterns(&hs, r.base, r.size, at.data(), pat.data(),
                                     kHitsPerRegion, &faulted, &did);
+            scanMs += GetTickCount64() - ts;
             for (int k = 0; k < n; ++k) {
+                if (Excluded(at[k])) continue;          // our own copy of the pattern
                 int already = 0;
                 for (auto& h : hits)
                     if (h.nameIdx == pat[k] && h.image == isImage) ++already;
                 if (already < kMaxHuntHitsPerName)
-                    hits.push_back(HuntHit{at[k], pat[k], isImage});
+                    hits.push_back(HuntHit{at[k], pat[k], isImage, 0});
             }
             scanned += did;
             sinceYield += did;
@@ -1972,14 +2352,58 @@ void RunStringHunt(int runNo) {
         namesInImage, (unsigned long long)names.size(), namesInHeap,
         (unsigned long long)names.size(), inImage, inHeap, scanned / 1048576.0));
 
-    // Heap hits are the interesting ones: dump around them, because if ids ARE text
-    // at runtime then the bytes beside one show the real live layout.
-    int shown = 0;
+    PROCESS_MEMORY_COUNTERS pmc1 = {};
+    pmc1.cb = sizeof(pmc1);
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc1, sizeof(pmc1));
+    AppendReport(rep, Fmt(
+        "  cost: %llu ms scanning, %lu page faults during the run\r\n"
+        "        (%.1f MB/s -- if the faults are in the millions the loop is not the\r\n"
+        "         bottleneck and touching every byte of 8 GB simply costs this much)\r\n\r\n",
+        (unsigned long long)scanMs,
+        (unsigned long)(pmc1.PageFaultCount - pmc0.PageFaultCount),
+        scanMs ? (scanned / 1048576.0) / (scanMs / 1000.0) : 0.0));
+
+    // What each heap hit SITS IN, before any hex. Run 1 printed six dumps and no
+    // table, so the fact that every hit came from one lookup table had to be
+    // reconstructed by hand from the bytes. The stride says it in a word.
+    int nPooled = 0, nElem = 0, nLoose = 0;
     for (auto& h : hits) {
-        if (h.image || shown >= 6) continue;
+        if (h.image) continue;
+        h.stride = NeighbourStride(h.at);
+        if (h.stride == 0x10) ++nPooled;
+        else if (h.stride == (int)kElemStride) ++nElem;
+        else ++nLoose;
+    }
+    AppendReport(rep, Fmt("  %d heap hits: %d in 0x10 id pools, %d at the 0x%X element "
+                          "stride, %d elsewhere\r\n",
+                          nPooled + nElem + nLoose, nPooled, nElem,
+                          (unsigned)kElemStride, nLoose));
+    for (auto& h : hits) {
+        if (h.image) continue;
+        const char* what = h.stride == 0x10   ? "id pool -- a table of every id, not an inventory"
+                         : h.stride == 0      ? "no id neighbour at any stride"
+                         : h.stride == (int)kElemStride ? "*** element stride ***" : "other";
+        AppendReport(rep, Fmt("    0x%012llX  %-20s stride 0x%02X  %s\r\n",
+                              (unsigned long long)h.at, names[h.nameIdx].c_str(),
+                              (unsigned)h.stride, what));
+    }
+    AppendReport(rep, "\r\n");
+
+    // Dump the informative ones first. A seventh dump of the id pool teaches nothing;
+    // one hit at an unexplained stride is the whole lead.
+    int shown = 0;
+    for (int pass = 0; pass < 3 && shown < 10; ++pass) {
+    for (auto& h : hits) {
+        if (h.image || shown >= 10) continue;
+        bool isElem = h.stride == (int)kElemStride;
+        bool isPool = h.stride == 0x10;
+        if (pass == 0 && !isElem) continue;
+        if (pass == 1 && (isElem || isPool)) continue;
+        if (pass == 2 && !isPool) continue;
         ++shown;
-        AppendReport(rep, Fmt("  --- heap hit: \"%s\" at 0x%llX\r\n",
-                              names[h.nameIdx].c_str(), (unsigned long long)h.at));
+        AppendReport(rep, Fmt("  --- heap hit: \"%s\" at 0x%llX  (stride 0x%02X)\r\n",
+                              names[h.nameIdx].c_str(), (unsigned long long)h.at,
+                              (unsigned)h.stride));
         for (long off = -0x30; off <= 0x40; off += 8) {
             uintptr_t a = (uintptr_t)((long long)h.at + off);
             if (!Readable(a, 8)) continue;
@@ -1992,17 +2416,25 @@ void RunStringHunt(int runNo) {
         }
         AppendReport(rep, "\r\n");
     }
+    }
 
     const char* verdict = (!namesInImage && !namesInHeap) ? "SEARCH FOUND NOTHING AT ALL"
-                        : (namesInHeap ? "IDS ARE TEXT AT RUNTIME"
-                                       : "IDS ARE NOT TEXT AT RUNTIME");
+                        : !namesInHeap                     ? "IDS ARE NOT TEXT AT RUNTIME"
+                        : nElem                            ? "ELEMENT-STRIDE HITS FOUND"
+                        : "IDS ARE TEXT, BUT ONLY IN LOOKUP TABLES";
     const char* meaning =
         (!namesInImage && !namesInHeap)
             ? "  Not even the image matched, so the search is broken or the id list is\r\n"
               "  wrong. Nothing else in this report means anything until that is fixed.\r\n"
-        : (namesInHeap
-            ? "  Item ids exist as text on the heap. The live layout is not the\r\n"
-              "  serialised one, but it can be read off the dumps above.\r\n"
+        : (nElem
+            ? "  At least one id sits at the serialised element stride, so a live slot\r\n"
+              "  array is in reach. The starred dumps above are the candidates.\r\n"
+          : namesInHeap
+            ? "  Ids are text on the heap, but every hit is 0x10 from the next id with\r\n"
+              "  nothing in between: a lookup table of every id in the game, which is\r\n"
+              "  present whether or not the player owns any of them. That answers the\r\n"
+              "  interning question and NOT the inventory one. Widen the id list, or\r\n"
+              "  stop scanning leaves and chase pointers from cGcPlayerStateData.\r\n"
             : "  The image has them and the heap does not: the runtime interns item ids\r\n"
               "  as something other than text, so the class table describes the save\r\n"
               "  format rather than the live object. Scanning for leaf objects cannot\r\n"

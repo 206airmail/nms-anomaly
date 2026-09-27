@@ -158,6 +158,121 @@ static void PublishFakeInventory() {
 }
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// A synthetic id pool: the negative shape for the string hunt.
+//
+// The real game holds a table of every substance id in existence, 0x10 apart
+// with nothing in between, present whether or not the player owns any of them.
+// The first hunt found only these, reported "ids are text on the heap", and that
+// read as progress -- it is not, because a pool says nothing about inventories.
+// The hunt now classifies each hit by the stride of its id neighbours, so the
+// control has to contain both shapes: this pool at 0x10, and the inventory above
+// at 0x30. A fixture with only one of them could not catch a probe that confuses
+// them, which is the exact failure being guarded against.
+//
+// The ids are deliberately nonsense: a real id would also appear in the fake
+// inventory or in this file's own literals, and then a hit could not be pinned
+// to one structure.
+static void PublishFakeIdPool() {
+    static const char* kPool[] = {
+        "ZZPOOL1", "ZZPOOL2", "ZZPOOL3", "ZZPOOL4",
+        "ZZPOOL5", "ZZPOOL6", "ZZPOOL7", "ZZPOOL8",
+    };
+    const size_t n = sizeof(kPool) / sizeof(kPool[0]);
+    unsigned char* pool = (unsigned char*)calloc(n, 0x10);
+    if (!pool) return;
+    for (size_t k = 0; k < n; ++k)
+        memcpy(pool + k * 0x10, kPool[k], strlen(kPool[k]));   // NUL padding from calloc
+    char msg[128];
+    sprintf_s(msg, "fake id pool: %zu ids at 0x10 stride, at %p\n", n, (void*)pool);
+    OutputDebugStringA(msg);
+    // Leaked on purpose, like the other fixtures.
+}
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A synthetic cGcPlayerStateData: the positive control for phase P.
+//
+// 27 containers of 0x160 bytes at offset 0x809D8 inside one allocation, which is
+// where tools/nms_meta_extract.py says they live and how far apart. Phase P looks
+// for that periodicity rather than for any one container's field values.
+//
+// WHAT THIS CAN AND CANNOT PROVE. It exercises the scan, the clustering and the
+// reporting: if phase P cannot find 27 containers laid out exactly as the offline
+// extraction describes, it is broken and a negative result from the real game
+// means nothing. It CANNOT confirm that the game's array handle really is
+// {pointer, count, capacity} at +0x00/+0x08/+0x0C, because this fixture writes
+// handles in that very shape -- the same trap the old fake container fell into,
+// where a control built from a hypothesis was read as evidence for it. Only the
+// live game can settle the handle layout.
+//
+// Two containers are left completely empty on purpose: unowned storage chests
+// really are empty, and phase P must not need every member of the run to be
+// populated.
+static void PublishFakePlayerState() {
+    const size_t kCont = 0x160, kRun = 27, kFirst = 0x809D8, kClass = 0x86A11;
+    unsigned char* psd = (unsigned char*)calloc(1, kClass);
+    if (!psd) return;
+
+    static const char* kIds[] = { "FUEL1", "YELLOW2", "OXYGEN",
+                                  "ASTEROID1", "ASTEROID3", "RED2" };
+    for (size_t c = 0; c < kRun; ++c) {
+        unsigned char* cont = psd + kFirst + c * kCont;
+        if (c == 14 || c == 20) continue;         // FishBaitBox and Grave: empty
+        const size_t kSlots = 6;
+        unsigned char* slots = (unsigned char*)calloc(kSlots, 0x30);
+        if (!slots) continue;
+        for (size_t k = 0; k < kSlots; ++k) {
+            unsigned char* e = slots + k * 0x30;
+            const char* id = kIds[(c + k) % 6];
+            memcpy(e + 0x00, id, strlen(id));
+            int amount = (int)(100 + c * 10 + k), maxAmount = 9999, x = (int)k;
+            unsigned int type = 1;
+            memcpy(e + 0x10, &x, 4);
+            memcpy(e + 0x18, &amount, 4);
+            memcpy(e + 0x20, &maxAmount, 4);
+            memcpy(e + 0x24, &type, 4);
+        }
+        // Slots at +0x10 and ValidSlotIndices at +0x30, each a
+        // {pointer, count, capacity} handle. BaseStatValues (+0x00) and
+        // SpecialSlots (+0x20) stay zeroed, which is a valid empty handle.
+        unsigned long long sp = (unsigned long long)(void*)slots;
+        unsigned int n = (unsigned int)kSlots;
+        memcpy(cont + 0x10, &sp, 8);
+        memcpy(cont + 0x18, &n, 4);
+        memcpy(cont + 0x1C, &n, 4);
+        unsigned char* valid = (unsigned char*)calloc(kSlots, 8);
+        if (valid) {
+            unsigned long long vp = (unsigned long long)(void*)valid;
+            memcpy(cont + 0x30, &vp, 8);
+            memcpy(cont + 0x38, &n, 4);
+            memcpy(cont + 0x3C, &n, 4);
+        }
+        // Width and Height are written as the game writes them -- which is to say
+        // unreliably. Container 3 gets 1x1 and container 5 gets 16x1, the two cases
+        // the save editor documents as lies, so that any future filter on grid
+        // geometry fails this control instead of failing in the real game.
+        int w = 10, h = 1;
+        if (c == 3) { w = 1; h = 1; }
+        if (c == 5) { w = 16; h = 1; }
+        unsigned int cls = 3, ver = 4;
+        memcpy(cont + 0x40, &cls, 4);
+        memcpy(cont + 0x44, &h, 4);
+        memcpy(cont + 0x50, &ver, 4);
+        memcpy(cont + 0x54, &w, 4);
+        char nm[48];
+        sprintf_s(nm, "FakeRunContainer%zu", c);
+        memcpy(cont + 0x58, nm, strlen(nm));
+        cont[0x158] = 1;
+    }
+    char msg[192];
+    sprintf_s(msg, "fake player state: %zu containers of 0x%zX at %p+0x%zX\n",
+              kRun, kCont, (void*)psd, kFirst);
+    OutputDebugStringA(msg);
+    // Leaked on purpose, like the other fixtures.
+}
+// ---------------------------------------------------------------------------
+
 static LONG WINAPI GameFilter(EXCEPTION_POINTERS*) {
     OutputDebugStringA("fake game crash filter ran\n");
     return EXCEPTION_EXECUTE_HANDLER;
@@ -171,6 +286,8 @@ int wmain(int argc, wchar_t** argv) {
     SetUnhandledExceptionFilter(GameFilter);   // like NMS registering its dump writer
     PublishFakeMetaTable();
     PublishFakeInventory();
+    PublishFakeIdPool();
+    PublishFakePlayerState();
     char state[16] = {};
     XInputGetState(0, state);
 

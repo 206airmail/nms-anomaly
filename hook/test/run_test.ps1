@@ -60,11 +60,21 @@ MetaProbeScanHeap=1
 MetaProbeHeapBudgetMB=512
 InstProbe=$(if ($Probe) { 1 } else { 0 })
 InstProbeBudgetMB=512
+StringHunt=$(if ($Probe) { 1 } else { 0 })
 "@ | Set-Content $ini -Encoding ascii   # ASCII, not utf8: a BOM in front of
 # [hook] makes GetPrivateProfileIntW miss the section entirely and every setting
 # silently falls back to its default -- which looks exactly like a broken probe.
 Remove-Item "$bin\NMSLogger\metaprobe_*.txt" -ErrorAction SilentlyContinue
 Remove-Item "$bin\NMSLogger\instprobe_*.txt" -ErrorAction SilentlyContinue
+Remove-Item "$bin\NMSLogger\stringhunt_*.txt" -ErrorAction SilentlyContinue
+
+# One id from the fake pool (0x10 stride) and one from the fake inventory (0x30).
+# The hunt's whole job is to tell those apart, so the control names both.
+@"
+# written by run_test.ps1
+ZZPOOL3
+FERRITE_DUST
+"@ | Set-Content "$bin\NMSLogger\probe_strings.txt" -Encoding ascii
 
 $out = Join-Path $env:TEMP 'NMSLoggerTest\session.txt'
 Remove-Item $out -ErrorAction SilentlyContinue
@@ -110,26 +120,87 @@ if ($Probe) {
     Write-Host "=== $($inst[0].FullName) ==="
     Get-Content $inst[0].FullName
     $itext = Get-Content $inst[0].FullName -Raw
-    if ($itext -notmatch 'VERDICT: INVENTORY FOUND') {
+
+    # Phase P: the run of 27. Asserted on the COUNT, not on "a run was found" --
+    # a cluster of three would satisfy any presence check while meaning the stride
+    # or the handle shape is wrong.
+    if ($itext -notmatch 'VERDICT: CONTAINER RUN FOUND \(spans 27 of 27 strides') {
+        throw 'phase P did not find the full 27-stride run in its own control'
+    }
+    if ($itext -notmatch 'The full run: the cluster spans all 27 strides') {
+        throw 'phase P spanned 27 strides but did not recognise the run as complete'
+    }
+    # 25, not 27: the fixture leaves two containers empty on purpose, because an
+    # unowned storage chest is empty in a real save too. The number is asserted
+    # exactly -- 27 would mean the empty ones were wrongly counted, and fewer than
+    # 25 would mean populated ones were dropped.
+    if ($itext -notmatch '25 populated containers spanning 27 strides') {
+        throw 'phase P did not report exactly 25 populated containers across the run'
+    }
+    # The lying grid values must not have excluded their containers.
+    foreach ($lie in @('width=1 height=1', 'width=16 height=1')) {
+        if ($itext -notmatch [regex]::Escape($lie)) {
+            throw "phase P dropped the container with $lie -- Width/Height are not a filter"
+        }
+    }
+    Write-Host ""
+    Write-Host "phase P control PASSED: full 27-run found, lying grid values kept."
+
+    if ($itext -notmatch 'VERDICT: (INVENTORY FOUND|CONTAINER RUN FOUND)') {
         throw 'the instance probe missed its own positive control (report above)'
     }
-    foreach ($needle in @('FakeFreighterStorage4', 'CARBON', '\^LAUNCHFUEL', 'FERRITE_DUST')) {
+    # Phase P now short-circuits before the container-signature phase, so the
+    # assertions that belonged to that phase only apply when it actually ran.
+    # They are kept rather than deleted: the signature path is still the fallback
+    # when no run is found, and an untested fallback is not a fallback.
+    if ($itext -match 'PHASE 1 -- containers by their own signature') {
+        $nContainers = ([regex]::Matches($itext, '(?m)^  CONTAINER at ')).Count
+        if ($nContainers -gt 0) {
+            if ($itext -notmatch 'FakeFreighterStorage4') {
+                throw 'the container-signature phase found containers but not the fake one'
+            }
+            if ($itext -notmatch 'width=10 height=1 version=4 class=3 stackGroup=1 isCool=1') {
+                throw 'the container fields did not read back exactly as the fake wrote them'
+            }
+        }
+    }
+    # Item ids must come back off the run, whichever phase reported it.
+    foreach ($needle in @('FUEL1', 'ASTEROID1')) {
         if ($itext -notmatch $needle) { throw "the instance probe did not report $needle" }
-    }
-    if ($itext -notmatch '10 slots declared') {
-        throw 'the instance probe did not read the slot count from the array handle'
-    }
-    # Count them. The fake builds exactly one container, and an earlier version of
-    # this test passed while the probe reported nine -- eight of them stale copies
-    # of its own scratch. Asserting presence is not enough; assert the absence of
-    # everything else.
-    $nContainers = ([regex]::Matches($itext, '(?m)^  CONTAINER at ')).Count
-    if ($nContainers -ne 1) {
-        throw "the instance probe reported $nContainers containers; the fake has exactly 1"
-    }
-    if ($itext -notmatch 'width=10 height=1 version=4 class=3 stackGroup=1 isCool=1') {
-        throw 'the container fields did not read back exactly as the fake wrote them'
     }
     Write-Host ""
     Write-Host "instance control PASSED: container, slot count and item ids all recovered."
+
+    # The string hunt. Its question is not "is the id text" -- run 1 answered that
+    # yes and it turned out to mean nothing -- but "what structure is the text IN".
+    $sh = Get-ChildItem "$bin\NMSLogger\stringhunt_*.txt" -ErrorAction SilentlyContinue
+    if (-not $sh) { throw 'the string hunt wrote no report -- it did not run' }
+    Write-Host ""
+    Write-Host "=== $($sh[0].FullName) ==="
+    Get-Content $sh[0].FullName
+    $htext = Get-Content $sh[0].FullName -Raw
+
+    # Classification, both ways round. A hunt that called the pool an element array
+    # (or the reverse) would still find every string and still look like it worked.
+    if ($htext -notmatch 'ZZPOOL3\s+stride 0x10\s+id pool') {
+        throw 'the hunt did not recognise the 0x10 id pool for what it is'
+    }
+    if ($htext -notmatch 'FERRITE_DUST\s+stride 0x30\s+\*\*\* element stride') {
+        throw 'the hunt did not classify the fake inventory slot at the element stride'
+    }
+    if ($htext -notmatch 'VERDICT: ELEMENT-STRIDE HITS FOUND') {
+        throw 'the hunt found an element-stride hit but did not say so in the verdict'
+    }
+
+    # And the count, because this is where run 1 actually went wrong: two of its six
+    # RED2 hits were the probe's own copy of the id list, sitting on the probe
+    # thread's stack. The fake pool holds ZZPOOL3 exactly once, so more than one
+    # heap hit means the hunt is finding itself again.
+    $nPool = ([regex]::Matches($htext, '(?m)^\s+0x[0-9A-F]+\s+ZZPOOL3\s')).Count
+    if ($nPool -ne 1) {
+        throw "the hunt reported $nPool heap hits for ZZPOOL3; the fake pool holds exactly 1 " +
+              "(more than that means it is finding its own copy of the list again)"
+    }
+    Write-Host ""
+    Write-Host "string hunt control PASSED: pool and element stride told apart, no self-hits."
 }
