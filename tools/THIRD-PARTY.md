@@ -69,3 +69,36 @@ this order, and the first hit wins:
 
 If a tool is missing, the scene check does not run, and the report says so
 rather than reporting an unchecked library as a clean one.
+
+## 7-Zip
+
+- Source: <https://www.7-zip.org/>
+- Author: Igor Pavlov
+- Licence: **GNU Lesser General Public License, version 2.1 or later**, with the
+  additional unRAR restriction described below.
+- Shipped as: `tools/sevenzip/7z.exe` and `tools/sevenzip/7z.dll`, unmodified,
+  version 25.01, together with upstream's `License.txt`.
+
+Used to extract downloaded mod archives. Nexus mods for this game arrive as
+`.zip`, `.7z` and `.rar`, and 7-Zip is the only readily redistributable tool
+that reads all three.
+
+`7z.exe` on its own handles little beyond the 7z format; `7z.dll` is what adds
+the rest, so the two ship together and the engine looks for them together.
+
+### The unRAR restriction
+
+7-Zip's RAR support derives from unRAR source, whose licence forbids using it
+to develop a program that *creates* RAR archives. We only ever read them, and
+nothing here is a RAR compressor, so the restriction is satisfied. It is
+recorded because redistributing the binary carries the notice with it.
+
+The full LGPL-2.1 text is at <https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html>,
+and upstream's own terms travel with the binary as `tools/sevenzip/License.txt`.
+
+### Substituting your own build
+
+Set `NMSCHECK_7Z` to the full path of a `7z.exe` you trust and it is used in
+preference to the bundled one. Failing that, an installation under
+`C:\Program Files\7-Zip` or a `7z` on `PATH` is used if the bundled copy is
+absent.

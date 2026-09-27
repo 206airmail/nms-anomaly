@@ -1,4 +1,4 @@
-# Packaging nmscheck for distribution
+# Packaging Anomaly for distribution
 
 ```
 cd app && npx tauri build
@@ -8,24 +8,51 @@ Produces, in `app/src-tauri/target/release/bundle/`:
 
 | bundle | size |
 |---|---|
-| `msi/nmscheck_<ver>_x64_en-US.msi` | ~12.6 MB |
-| `nsis/nmscheck_<ver>_x64-setup.exe` | ~11.7 MB |
+| `msi/Anomaly_<ver>_x64_en-US.msi` | ~16.0 MB |
+| `nsis/Anomaly_<ver>_x64-setup.exe` | ~13.9 MB |
+
+**Delete stale bundles before publishing.** The directory is not cleaned between
+builds, so the rename from `nmscheck` left a full set of `nmscheck_*` installers
+sitting beside the new ones, indistinguishable from a current release.
 
 ## What ships
 
-Verified by extracting the MSI (`msiexec /a`), not by guessing:
+Verified 2026-09-27 by listing the NSIS installer's contents (`7z l`), not by
+guessing:
 
 ```
-app.exe                     4.8 MB   the Rust engine + the compiled UI
+anomaly.exe                 9.0 MB   the Rust engine + the compiled UI
 tools/hgpaktool.exe        10.1 MB   extracts vanilla assets from PCBANKS
 tools/MBINCompiler.exe      2.4 MB   decompiles .MBIN into readable XML
+tools/sevenzip/
+  7z.exe                    575 KB   extracts downloaded mod archives
+  7z.dll                    1.9 MB   the formats beyond .7z live here
+  License.txt                        upstream's own terms, shipped with it
 tools/nmslogger/
-  xinput9_1_0.dll           239 KB   the session recorder, installed by the user
+  xinput9_1_0.dll           377 KB   the session recorder, installed by the user
 tools/THIRD-PARTY.md                 attribution and licences
 ```
 
-That is the whole payload. The figures above predate the recorder; re-extract
-after the next build rather than trusting the arithmetic.
+That is the whole payload. Re-list after any build rather than trusting the
+arithmetic above -- these figures have been wrong before.
+
+## Why 7-Zip is bundled rather than required
+
+Nexus mods for this game arrive as `.zip`, `.7z` and `.rar`. RAR's licence
+forbids using its reference code to *create* an implementation, so a pure-Rust
+reader for all three is not something to reach for casually. 7-Zip reads them
+all and is redistributable.
+
+`7z.exe` alone handles little beyond the 7z format; `7z.dll` is what adds the
+rest, so the two ship together and `find_7z` looks for them together.
+
+Lookup order, in `engine/archive.rs`: `NMSCHECK_7Z` if set, then the bundled
+copy, then an installed 7-Zip under Program Files or on `PATH`. The bundled
+copy beating the system one is deliberate -- a release should behave the same
+on every machine -- and the environment variable exists so a user can still
+override it. Before this was fixed, `find_7z` did not look in the bundle at
+all, so a packaged copy would have been ignored and a machine without 7-Zip
+installed could not install a mod.
 
 **The recorder ships but is not installed.** It sits in `tools/` like the other
 two and only reaches the game when the user presses Install on the Sessions tab

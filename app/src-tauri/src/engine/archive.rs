@@ -70,11 +70,24 @@ fn is_asset_file(name: &str) -> bool {
 }
 
 /// Where 7-Zip is, if it is anywhere.
+///
+/// Order matters: the copy we ship wins over whatever the machine happens to
+/// have, so a release behaves the same everywhere. A user who wants their own
+/// build still overrides everything with `NMSCHECK_7Z`.
 pub fn find_7z() -> Option<PathBuf> {
     if let Ok(from_env) = std::env::var("NMSCHECK_7Z") {
         let path = PathBuf::from(from_env);
         if path.is_file() {
             return Some(path);
+        }
+    }
+    // The bundled copy, under `tools/sevenzip/` beside the other binaries.
+    // `7z.exe` needs `7z.dll` next to it for anything beyond the 7z format, so
+    // they ship together and are found together.
+    for dir in super::tools::dirs() {
+        let bundled = dir.join("sevenzip").join(if cfg!(windows) { "7z.exe" } else { "7zz" });
+        if bundled.is_file() {
+            return Some(bundled);
         }
     }
     let candidates = [

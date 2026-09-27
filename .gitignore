@@ -44,6 +44,14 @@ __pycache__/
 # records what they are and under which licence, and is tracked.
 tools/venv/
 tools/*.exe
+# Third-party binaries live under tools/ but are never tracked -- they are not
+# ours to redistribute through this repo, and each is version-locked to either
+# the game or its own upstream. tools/THIRD-PARTY.md records what a release
+# bundles, under which licence, and how to obtain or substitute each one.
+# Upstream licence texts ARE tracked, because we are obliged to ship them.
+tools/sevenzip/*.exe
+tools/sevenzip/*.dll
+tools/nmslogger/*.dll
 
 # ---- editor and OS noise ----
 .vscode/
