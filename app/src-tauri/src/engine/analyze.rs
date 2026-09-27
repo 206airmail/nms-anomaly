@@ -791,6 +791,112 @@ mod tests {
         assert_eq!(report.actionable().count(), 0);
     }
 
+    /// The same mod, with its flattened properties left on disk instead of held
+    /// on the file.
+    ///
+    /// Every other test here builds `ModFile`s with `props` inline, so the whole
+    /// suite only ever takes the borrowed branch of `propcache::props_of`. The
+    /// app takes the other one: `scancache` stops the scan retaining properties,
+    /// and each contested target fetches its copies by content hash.
+    fn mod_with_props_on_disk(name: &str, props: &[(&str, &str)]) -> Mod {
+        let dir = std::env::temp_dir().join("nmscheck-analyze-on-disk");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let mut xml = String::from(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+             <Data template=\"GcGameplayGlobals\">\n",
+        );
+        for (path, value) in props {
+            xml.push_str(&format!("<Property name=\"{path}\" value=\"{value}\" />\n"));
+        }
+        xml.push_str("</Data>\n");
+
+        // Named after the mod AND its contents, so two mods that disagree hash
+        // differently and cannot share a cache entry.
+        let file_path = dir.join(format!("{name}-{}.EXML", props.len()));
+        std::fs::write(&file_path, &xml).expect("write fragment");
+        let sha1 = crate::engine::decompile::Decompiler::content_hash(&file_path)
+            .expect("hashable");
+
+        // Flatten it into the cache and then throw the result away -- which is
+        // exactly what the lean scan does.
+        let stored = crate::engine::propcache::parse(&file_path, &sha1);
+        assert!(
+            !stored.props.is_empty(),
+            "the fragment flattened to nothing, so this test would pass vacuously"
+        );
+
+        Mod {
+            name: name.to_string(),
+            files: vec![ModFile {
+                kind: Some(FileKind::Exml),
+                target: Some("GLOBALS/X.MBIN".to_string()),
+                rel_path: "GLOBALS/X.EXML".to_string(),
+                sha1,
+                // Deliberately empty. This is the whole point.
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// A real clash must still be a clash when the properties live on disk.
+    ///
+    /// This is the case the live A/B could not cover: the library it ran against
+    /// had zero clashes and zero mergeable assets, so the paths the lazy-property
+    /// change touched most were never executed. The failure mode it guards is the
+    /// worst one this tool has -- if `props_of` came back empty, every copy would
+    /// look like it defines nothing, no property would overlap, and a library
+    /// full of conflicts would be reported as clean.
+    #[test]
+    fn a_clash_is_still_a_clash_with_properties_on_disk() {
+        let inline = run(vec![
+            mod_with("Fast", &[("GroundRunSpeed", "12")]),
+            mod_with("Slow", &[("GroundRunSpeed", "4")]),
+        ]);
+        let on_disk = run(vec![
+            mod_with_props_on_disk("Fast", &[("GroundRunSpeed", "12")]),
+            mod_with_props_on_disk("Slow", &[("GroundRunSpeed", "4")]),
+        ]);
+
+        assert_eq!(on_disk.conflicts.len(), inline.conflicts.len());
+        let (a, b) = (&inline.conflicts[0], &on_disk.conflicts[0]);
+        assert_eq!(b.kind, a.kind, "kind changed when properties moved to disk");
+        assert_eq!(b.severity, a.severity, "severity changed");
+        assert_eq!(b.benign, a.benign, "benign-ness changed");
+        assert_eq!(b.overlap, a.overlap, "the overlapping properties changed");
+        assert_eq!(
+            b.clashes.len(),
+            a.clashes.len(),
+            "a clash was lost when the properties were fetched rather than held"
+        );
+
+        // Stated directly as well as by comparison, so the test still means
+        // something if the inline expectation is ever changed.
+        assert_eq!(b.severity, Some(Severity::Critical));
+        assert!(!b.benign);
+        assert_eq!(on_disk.actionable().count(), 1);
+    }
+
+    /// The mirror image: disjoint properties must not become a clash.
+    ///
+    /// Asserted separately because "fetch returned nothing" and "fetch returned
+    /// the wrong file's properties" fail in opposite directions, and a test that
+    /// only checks clashes are found would pass while the second was happening.
+    #[test]
+    fn disjoint_properties_stay_benign_with_properties_on_disk() {
+        let report = run(vec![
+            mod_with_props_on_disk("A", &[("ShipInteractRadius", "200")]),
+            mod_with_props_on_disk("B", &[("MaxNumSameGroupTech", "6")]),
+        ]);
+        assert_eq!(report.conflicts.len(), 1);
+        let conflict = &report.conflicts[0];
+        assert_eq!(conflict.kind, "disjoint");
+        assert!(conflict.benign);
+        assert!(conflict.overlap.is_empty());
+        assert_eq!(report.actionable().count(), 0);
+    }
+
     #[test]
     fn same_property_different_values_is_critical() {
         let report = run(vec![

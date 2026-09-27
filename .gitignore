@@ -59,3 +59,10 @@ tools/_itemgen/
 tools/nms_items.json
 tools/nms_items_ids.txt
 tools/nms_classes.json
+
+# 7-Zip, redistributable but not ours to version. The licence text IS tracked --
+# we ship it, so losing it would mean shipping LGPL software without its terms.
+# tools/THIRD-PARTY.md says where to get the binaries and which version.
+tools/sevenzip/*.exe
+tools/sevenzip/*.dll
+!tools/sevenzip/License.txt

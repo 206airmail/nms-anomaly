@@ -6,6 +6,19 @@ several of these were expensive to learn and are easy to re-attempt by accident.
 
 Last updated 2026-09-27.
 
+## Plugin UI
+
+Designed 2026-09-27 in `docs/plugin-ui.md`. The short version: **define the
+plugin-facing API before building any renderer**, because three of the four use
+cases Nick named need only a hotkey and a line of confirmation text, and the
+fourth -- authoring sort rules -- belongs in the desktop app rather than in-game.
+
+Order: hotkeys first (the message pump is already ours), then plugin settings over
+the existing pipe, then a toast as a Vulkan **implicit layer** (not a
+`vkQueuePresentKHR` detour), and an interactive panel only if a plugin truly needs
+one. NMS is Vulkan with NVIDIA Streamline in the chain -- measured from the import
+table, because the loaded-module list misleadingly suggests D3D12.
+
 ## Live memory / the native API
 
 The API's purpose is to be a **host for separate, independently developed plugins**.
@@ -130,9 +143,10 @@ plugin. That shape is from NMSExtender, which is MIT, so it may be copied.
 
 ## Mod manager
 
-- **Track the third-party binaries, or a fresh clone cannot build a release.**
-  `tools/sevenzip/` is untracked entirely -- even `License.txt`, which we do intend
-  to ship. Decide deliberately: vendor them, or document the fetch.
+- ~~Track the third-party binaries~~ **done 2026-09-27.** It was worse than
+  recorded here: the whole 7-Zip bundling change had never been applied, so 0.1.0
+  shipped without it and `find_7z` never looked in the bundle. Now bundled,
+  licensed, documented and guarded by two tests. See `docs/packaging.md`.
 - Install the NSIS bundle and exercise the installed layout. It is the only untested
   difference from the verified `target/release` tree.
 - Consume a **build -> libMBIN version map** instead of matching release tags by
@@ -140,9 +154,12 @@ plugin. That shape is from NMSExtender, which is MIT, so it may be copied.
   `release, name, date, mbin version, mbin tag`, merged from GitHub at runtime. It is
   a table of public facts, but that project is AGPL with a no-compete clause, so
   fetching it is fine and vendoring it is a decision to make on purpose.
-- The A/B that verified the memory fix ran on a **clean library** (0 clashes,
-  0 mergeable), so the clash and merge paths were never exercised by it -- which is
-  where most of the change was. Build a library with a real clash and re-run.
+- ~~The A/B that verified the memory fix ran on a clean library~~ **covered
+  2026-09-27** by `a_clash_is_still_a_clash_with_properties_on_disk` and its
+  disjoint mirror, both verified by deliberately breaking `props_of` and watching
+  the clash become "disjoint". Still worth running the real A/B against a library
+  with genuine clashes if one ever exists, but the silent-false-negative path is
+  no longer untested.
 - `hook.saveBytes` is misleading: the hook only ever sees `mf_*.hg` writes, never the
   main save file, which is likely memory-mapped. Either measure it properly or stop
   reporting it as if it were the save size.

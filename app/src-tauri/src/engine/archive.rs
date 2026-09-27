@@ -70,11 +70,33 @@ fn is_asset_file(name: &str) -> bool {
 }
 
 /// Where 7-Zip is, if it is anywhere.
+/// Where 7-Zip is, if it is anywhere.
+///
+/// Order matters: an explicit override, then the copy we ship, then whatever the
+/// machine happens to have. The bundled copy beats the system one so a release
+/// behaves the same everywhere, and the environment variable exists so a user can
+/// still point at their own build.
+///
+/// This looked fine for a long time on a machine that already had 7-Zip installed,
+/// which is exactly why it was worth checking: without the bundle lookup, a clean
+/// machine could not extract a downloaded mod at all, and the failure would only
+/// ever appear on somebody else's computer.
 pub fn find_7z() -> Option<PathBuf> {
     if let Ok(from_env) = std::env::var("NMSCHECK_7Z") {
         let path = PathBuf::from(from_env);
         if path.is_file() {
             return Some(path);
+        }
+    }
+    // The copy we ship, under `tools/sevenzip/` beside the other binaries.
+    // `7z.exe` handles little beyond the 7z format without `7z.dll` next to it,
+    // so they travel together and are found together.
+    for dir in super::tools::dirs() {
+        let bundled = dir
+            .join("sevenzip")
+            .join(if cfg!(windows) { "7z.exe" } else { "7zz" });
+        if bundled.is_file() {
+            return Some(bundled);
         }
     }
     let candidates = [
@@ -361,6 +383,62 @@ pub fn install(archive: &Path, staging_dir: &Path, overwrite: bool) -> Result<Pl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The repository root, from this crate at `app/src-tauri`.
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+    }
+
+    /// 7-Zip must actually be in the bundle.
+    ///
+    /// It was not, for the whole of 0.1.0. The decision to ship it was taken, the
+    /// binaries were downloaded, and the change to `tauri.conf.json` was written
+    /// and never applied -- so the released installer contained no 7-Zip, and
+    /// `find_7z` did not look in the bundle either. **Nothing revealed it, because
+    /// the machine it was built on has 7-Zip installed**, so the system fallback
+    /// always answered. It would have failed only on someone else's computer, and
+    /// only when they first tried to install a mod.
+    ///
+    /// That is the shape of bug worth a test: correct behaviour on the developer's
+    /// machine, broken everywhere else.
+    #[test]
+    fn the_bundle_still_ships_seven_zip() {
+        let conf = std::fs::read_to_string(repo_root().join("app/src-tauri/tauri.conf.json"))
+            .expect("tauri.conf.json must be readable");
+        for needed in [
+            "tools/sevenzip/7z.exe",
+            // Without the dll, 7z.exe handles little beyond the 7z format -- and
+            // Nexus mods arrive as .zip and .rar far more often than .7z.
+            "tools/sevenzip/7z.dll",
+            // We redistribute LGPL software; its terms travel with it.
+            "tools/sevenzip/License.txt",
+        ] {
+            assert!(
+                conf.contains(needed),
+                "{needed} is missing from the bundle resources in tauri.conf.json"
+            );
+        }
+    }
+
+    /// The licence text is shipped, so it has to be in the repository.
+    ///
+    /// The binaries deliberately are not -- see tools/THIRD-PARTY.md for where to
+    /// get them -- but a licence that only exists on one developer's disk means a
+    /// release built anywhere else redistributes 7-Zip without its terms.
+    #[test]
+    fn the_seven_zip_licence_is_in_the_repository() {
+        let licence = repo_root().join("tools/sevenzip/License.txt");
+        let text = std::fs::read_to_string(&licence).unwrap_or_else(|e| {
+            panic!("{} must exist and be readable: {e}", licence.display())
+        });
+        assert!(
+            text.contains("GNU LGPL") || text.contains("GNU Lesser General Public License"),
+            "the file at {} does not look like 7-Zip's licence",
+            licence.display()
+        );
+    }
 
     fn paths(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
