@@ -65,6 +65,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdarg>
+#include <cstring>
 
 namespace {
 
@@ -943,6 +944,449 @@ void RunProbe(int runNo) {
     g_exclude.clear();
 }
 
+// ===========================================================================
+// INSTANCE PROBE -- find live inventory containers in the running game.
+//
+// The metadata probe answers "what shape is a cGcInventoryContainer". This one
+// answers "where is one right now", which is a different problem and the only
+// one that needs a save loaded.
+//
+// It works because the layout is known, so the search is a signature match
+// rather than a blind scan. cGcInventoryElement is the ideal anchor: its first
+// field is a 16-byte NUL-padded ASCII item id ("CARBON", "^LAUNCHFUEL"), which
+// is far too structured to occur by accident, and the integers beside it
+// constrain each other -- Amount <= MaxAmount, DamageFactor in [0,1], and two
+// fields that can only be 0 or 1.
+//
+// Three phases:
+//   A  scan private memory for runs of valid elements at the array stride
+//   B  one pass looking for a pointer to each run -- a dynamic array handle
+//      sits at container+0x10, so a hit names a candidate container
+//   C  validate the container's own fields and print what is in it
+//
+// EVERY OFFSET BELOW IS MEASURED, AND ONLY FOR ONE BUILD. They come from the
+// descriptor table in NMS.exe (timestamp 0x6AB0FFC9), extracted by
+// tools/nms_meta_extract.py, where 2731 of 2734 classes tile without overlap.
+// After a game patch, re-extract before trusting a single one of them.
+// ===========================================================================
+
+// cGcInventoryElement -- tiled size 0x2A, but 0x30 as an array element, which is
+// the `size` the container's dynamic-array member declares.
+constexpr size_t kElemStride    = 0x30;
+constexpr size_t kElemId        = 0x00;   // string16, NUL-padded
+constexpr size_t kElemIndexX    = 0x10;   // cGcInventoryIndex { X, Y } -- 8 bytes, not 12
+constexpr size_t kElemIndexY    = 0x14;
+constexpr size_t kElemAmount    = 0x18;
+constexpr size_t kElemDamage    = 0x1C;
+constexpr size_t kElemMaxAmount = 0x20;
+constexpr size_t kElemType      = 0x24;   // enum
+constexpr size_t kElemAdded     = 0x28;
+constexpr size_t kElemInstalled = 0x29;
+
+// cGcInventoryContainer -- 0x159 bytes
+constexpr size_t kContSlots   = 0x10;     // dynamic-array handle -> elements
+// A dynamic array occupies 0x10 bytes inline, and a pointer only accounts for 8 of
+// them. Reading the next dword as the element count is a hypothesis, so it is
+// sanity-checked and reported rather than trusted.
+constexpr size_t kContSlotCount = 0x18;
+constexpr size_t kContClass   = 0x40;
+constexpr size_t kContHeight  = 0x44;
+constexpr size_t kContVersion = 0x50;
+constexpr size_t kContWidth   = 0x54;
+constexpr size_t kContName    = 0x58;     // string256
+constexpr size_t kContIsCool  = 0x158;
+constexpr size_t kContStackGroup = 0x4C;
+constexpr size_t kContSize     = 0x159;
+
+constexpr int    kMinRun       = 4;       // consecutive elements to call it an array
+constexpr int    kMinNonEmpty  = 2;       // of which this many must hold an item
+constexpr int    kMaxStack     = 10000000;
+constexpr int    kMaxRuns      = 4096;
+constexpr int    kMaxCandsPerRegion = 65536;
+
+struct ElemView {
+    char  id[17];
+    int   x, y;
+    int   amount, maxAmount;
+    unsigned int  type;
+    unsigned char added, installed;
+    float damage;
+    bool  empty;
+};
+
+bool IdChar(unsigned char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+           c == '_' || c == '^' || c == '.' || c == '-' || c == '#';
+}
+
+// A slot is either empty (the id field is all zero) or holds a properly
+// NUL-padded id. Requiring the padding to be zero is most of this test's power:
+// random bytes that start like an id almost never end like one.
+bool ReadElem(uintptr_t p, ElemView* out) {
+    unsigned char b[kElemStride];
+    if (!Readable(p, kElemStride) || !SafeRead(p, b, kElemStride)) return false;
+
+    int n = 0;
+    while (n < 16 && b[kElemId + n] != 0) ++n;
+    bool allZero = (n == 0);
+    if (allZero) {
+        for (int i = 0; i < 16; ++i) if (b[kElemId + i] != 0) { allZero = false; break; }
+    }
+    if (!allZero) {
+        if (n < 2 || n > 15) return false;                       // 15 so padding exists
+        for (int i = 0; i < n; ++i) if (!IdChar(b[kElemId + i])) return false;
+        for (int i = n; i < 16; ++i) if (b[kElemId + i] != 0) return false;
+    }
+
+    int amount, maxAmount, x, y;
+    unsigned int type;
+    float damage;
+    memcpy(&x,         b + kElemIndexX,    4);
+    memcpy(&y,         b + kElemIndexY,    4);
+    memcpy(&amount,    b + kElemAmount,    4);
+    memcpy(&maxAmount, b + kElemMaxAmount, 4);
+    memcpy(&type,      b + kElemType,      4);
+    memcpy(&damage,    b + kElemDamage,    4);
+
+    if (amount < 0 || amount > kMaxStack) return false;
+    if (maxAmount < 0 || maxAmount > kMaxStack) return false;
+    if (b[kElemAdded] > 1 || b[kElemInstalled] > 1) return false;
+    if (!(damage >= 0.0f && damage <= 1.0f)) return false;        // also rejects NaN
+    if (x < -1 || x > 4096 || y < -1 || y > 4096) return false;
+    if (!allZero && (maxAmount < 1 || amount > maxAmount)) return false;
+
+    memset(out, 0, sizeof(*out));
+    if (!allZero) memcpy(out->id, b + kElemId, (size_t)n);
+    out->x = x; out->y = y;
+    out->amount = amount; out->maxAmount = maxAmount;
+    out->type = type;
+    out->added = b[kElemAdded]; out->installed = b[kElemInstalled];
+    out->damage = damage;
+    out->empty = allZero;
+    return true;
+}
+
+// Cheap pre-filter, inline and SEH-guarded, so the expensive validation only runs
+// on positions that could possibly be an element. Without this the scan does a
+// guarded memcpy every 8 bytes across gigabytes and never finishes.
+int ScanForElemCandidates(uintptr_t base, size_t size, uintptr_t* out, int outMax,
+                          int* faulted, size_t* scanned) {
+    int n = 0;
+    *faulted = 0;
+    *scanned = 0;
+    if (outMax <= 0 || size < kElemStride) return 0;
+    const unsigned char* p = (const unsigned char*)base;
+    const unsigned char* end = (const unsigned char*)(base + size - kElemStride);
+    __try {
+        for (; p < end; p += 8) {
+            unsigned char c0 = p[0];
+            if (!((c0 >= 'A' && c0 <= 'Z') || c0 == '^')) continue;   // ids are upper-case
+            unsigned char c1 = p[1];
+            if (!((c1 >= 'A' && c1 <= 'Z') || (c1 >= '0' && c1 <= '9') || c1 == '_')) continue;
+            if (p[15] != 0) continue;                                 // NUL padding
+            unsigned int amt, mx;
+            memcpy(&amt, p + kElemAmount, 4);
+            memcpy(&mx, p + kElemMaxAmount, 4);
+            if (amt > (unsigned)kMaxStack || mx > (unsigned)kMaxStack) continue;
+            out[n++] = (uintptr_t)p;
+            if (n >= outMax) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    *scanned = (size_t)((const unsigned char*)p - (const unsigned char*)base);
+    return n;
+}
+
+struct Run {
+    uintptr_t base;
+    int       count;
+    int       nonEmpty;
+};
+
+// Grow an anchor into the whole array. Extending backwards matters: the first
+// slots of an inventory are often empty, so the anchor is rarely slot zero.
+bool GrowRun(uintptr_t anchor, Run* out) {
+    ElemView e;
+    uintptr_t first = anchor, last = anchor;
+    int count = 1, nonEmpty = 1;
+    for (uintptr_t p = anchor - kElemStride; ; p -= kElemStride) {
+        if (p > anchor) break;                       // wrapped
+        if (!ReadElem(p, &e)) break;
+        first = p;
+        ++count;
+        if (!e.empty) ++nonEmpty;
+        if (count > 4096) break;
+    }
+    for (uintptr_t p = anchor + kElemStride; ; p += kElemStride) {
+        if (!ReadElem(p, &e)) break;
+        last = p;
+        ++count;
+        if (!e.empty) ++nonEmpty;
+        if (count > 4096) break;
+    }
+    (void)last;
+    if (count < kMinRun || nonEmpty < kMinNonEmpty) return false;
+    out->base = first;
+    out->count = count;
+    out->nonEmpty = nonEmpty;
+    return true;
+}
+
+// A string256 field is either printable text with NUL padding or all zero.
+// Anything else means this is not a container, so the caller needs to tell
+// "no name" apart from "not a name" -- hence the bool.
+bool ContainerName(uintptr_t cont, std::string* out) {
+    char buf[256];
+    if (!Readable(cont + kContName, 256) || !SafeRead(cont + kContName, buf, 256)) return false;
+    int n = 0;
+    while (n < 256 && buf[n] != 0) ++n;
+    for (int i = 0; i < n; ++i) {
+        unsigned char c = (unsigned char)buf[i];
+        if (c < 0x20 || c > 0x7E) return false;
+    }
+    for (int i = n; i < 256; ++i) if (buf[i] != 0) return false;   // must be NUL-padded
+    out->assign(buf, (size_t)n);
+    return true;
+}
+
+void RunInstanceProbe(int runNo) {
+    ULONGLONG t0 = GetTickCount64();
+    std::string rep;
+    std::wstring outPath = g_outDir + L"instprobe_" + std::to_wstring(runNo) + L".txt";
+
+    ReadImageInfo();
+    BuildRegionMap();
+    g_exclude.clear();
+    ULONG_PTR stackLo = 0, stackHi = 0;
+    GetCurrentThreadStackLimits(&stackLo, &stackHi);
+    Exclude((uintptr_t)stackLo, (uintptr_t)stackHi);
+
+    AppendReport(rep, Fmt(
+        "NMS instance probe -- run %d, hook " NMSLOG_HOOK_VERSION "\r\n"
+        "================================================================\r\n"
+        "Finding live cGcInventoryContainer objects by signature. Offsets come\r\n"
+        "from the descriptor table in NMS.exe and are valid for ONE build; the\r\n"
+        "image this ran against is stamped below.\r\n\r\n"
+        "build:   NMS.exe base 0x%llX  timestamp 0x%08lX\r\n",
+        runNo, (unsigned long long)g_img.base, g_img.timeStamp));
+
+    // ---- phase A: runs of inventory elements -------------------------------
+    std::vector<Run> runs;
+    size_t scanned = 0, cands = 0, faultedRegions = 0;
+    size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
+    size_t sinceYield = 0;
+    bool truncated = false;
+
+    std::vector<uintptr_t> cand(kMaxCandsPerRegion);
+    for (size_t ri = 0; ri < g_regions.size() && !truncated; ++ri) {
+        const Region& r = g_regions[ri];
+        if (r.type != MEM_PRIVATE) continue;                 // instances live on the heap
+        if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+        if (scanned >= budget) { truncated = true; break; }
+        int faulted = 0;
+        size_t did = 0;
+        int n = ScanForElemCandidates(r.base, r.size, cand.data(), kMaxCandsPerRegion,
+                                      &faulted, &did);
+        scanned += did;
+        sinceYield += did;
+        cands += (size_t)n;
+        if (faulted) ++faultedRegions;
+        for (int k = 0; k < n && (int)runs.size() < kMaxRuns; ++k) {
+            ElemView e;
+            if (!ReadElem(cand[k], &e) || e.empty) continue;
+            Run run;
+            if (!GrowRun(cand[k], &run)) continue;
+            bool dup = false;
+            for (auto& x : runs)
+                if (run.base >= x.base &&
+                    run.base < x.base + (uintptr_t)x.count * kElemStride) { dup = true; break; }
+            if (!dup) runs.push_back(run);
+        }
+        if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+    }
+
+    AppendReport(rep, Fmt(
+        "\r\nPHASE A -- runs of inventory elements\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  scanned %.1f MB of private memory%s\r\n"
+        "  %llu positions passed the cheap filter, %llu grew into runs\r\n"
+        "  %llu regions faulted mid-scan\r\n\r\n",
+        scanned / 1048576.0,
+        truncated ? "  (TRUNCATED -- raise InstProbeBudgetMB)" : "",
+        (unsigned long long)cands, (unsigned long long)runs.size(),
+        (unsigned long long)faultedRegions));
+
+    if (runs.empty()) {
+        AppendReport(rep,
+            "VERDICT: NO INVENTORY FOUND\r\n"
+            "----------------------------------------------------------------\r\n"
+            "  No run of valid cGcInventoryElement records was found. Either no save\r\n"
+            "  is loaded, the scan budget stopped short of the heap that holds them,\r\n"
+            "  or the layout has moved since the extract this was built from.\r\n");
+        WriteReportFile(outPath, rep);
+        logger::Push(Level::Warn, "instprobe", "verdict NO INVENTORY FOUND: no element runs in "
+                                               "scanned private memory");
+        g_regions.clear();
+        g_exclude.clear();
+        return;
+    }
+
+    for (size_t i = 0; i < runs.size() && i < 40; ++i)
+        AppendReport(rep, Fmt("  run %2llu: 0x%llX  %d slots, %d occupied\r\n",
+                              (unsigned long long)i, (unsigned long long)runs[i].base,
+                              runs[i].count, runs[i].nonEmpty));
+    AppendReport(rep, "\r\n");
+
+    // ---- phase B: who points at those runs? --------------------------------
+    // Every element boundary in every run, not just the run bases: GrowRun extends
+    // backwards and can overshoot the real array start into neighbouring heap, and
+    // the container stores the true base. Searching for one address we guessed
+    // would miss the container whenever the guess was long.
+    std::vector<uintptr_t> targets;
+    constexpr size_t kMaxTargets = 16384;
+    {   // Reserved up front on purpose. A growing vector of addresses leaves a copy
+        // of itself in freed heap at every reallocation, and a run of pointers into
+        // the element array is exactly what phase B is looking for -- so the probe
+        // finds its own discarded scratch and calls each copy a container.
+        size_t want = 0;
+        for (auto& r : runs) want += (size_t)r.count;
+        targets.reserve(want < kMaxTargets ? want : kMaxTargets);
+    }
+    for (auto& r : runs)
+        for (int k = 0; k < r.count && targets.size() < kMaxTargets; ++k)
+            targets.push_back(r.base + (size_t)k * kElemStride);
+    std::sort(targets.begin(), targets.end());
+    targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+    Exclude((uintptr_t)targets.data(), (uintptr_t)(targets.data() + targets.size()));
+
+    std::vector<uintptr_t> handles;
+    size_t scannedB = 0;
+    sinceYield = 0;
+    for (size_t ri = 0; ri < g_regions.size(); ++ri) {
+        const Region& r = g_regions[ri];
+        if (r.type == MEM_MAPPED) continue;
+        if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+        if (r.size > kPrivateRegionSkip) continue;
+        uintptr_t at[1024];
+        int idx[1024];
+        int faulted = 0;
+        size_t did = 0;
+        int n = ScanForTargets(targets.data(), (int)targets.size(), r.base, r.size,
+                               at, idx, 1024, &faulted, &did);
+        scannedB += did;
+        sinceYield += did;
+        for (int k = 0; k < n; ++k)
+            if (!Excluded(at[k])) handles.push_back(at[k]);
+        if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+    }
+
+    AppendReport(rep, Fmt(
+        "PHASE B -- pointers into those runs (a dynamic-array handle sits at\r\n"
+        "container+0x%llX, so each hit names a candidate container)\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  %llu element addresses searched for, %.1f MB scanned, %llu pointers found\r\n\r\n",
+        (unsigned long long)kContSlots, (unsigned long long)targets.size(),
+        scannedB / 1048576.0, (unsigned long long)handles.size()));
+
+    // ---- phase C: validate the container and show what is in it ------------
+    int good = 0, rejected = 0;
+    for (uintptr_t h : handles) {
+        if (h < kContSlots) continue;
+        uintptr_t cont = h - kContSlots;
+        if (!Readable(cont, kContSize)) continue;
+        unsigned char c[kContSize];
+        if (!SafeRead(cont, c, kContSize)) continue;
+        int width = 0, height = 0, version = 0;
+        memcpy(&width, c + kContWidth, 4);
+        memcpy(&height, c + kContHeight, 4);
+        memcpy(&version, c + kContVersion, 4);
+        unsigned int cls = 0, ssg = 0;
+        memcpy(&cls, c + kContClass, 4);
+        memcpy(&ssg, c + kContStackGroup, 4);
+        uintptr_t slots = 0;
+        memcpy(&slots, c + kContSlots, 8);
+        // These bounds are what separates a container from a fragment of some
+        // pointer table: Class and StackSizeGroup are enums, Version is a save
+        // format number, and a real container has at least one row and column.
+        // Without them the probe reported nine containers where there was one, and
+        // their Version fields were the low halves of addresses.
+        std::string nm;
+        if (width < 1 || width > 4096 || height < 1 || height > 4096) { ++rejected; continue; }
+        if (version < 0 || version > 10000) { ++rejected; continue; }
+        if (cls > 255 || ssg > 255) { ++rejected; continue; }
+        if (c[kContIsCool] > 1) { ++rejected; continue; }
+        if (!ContainerName(cont, &nm)) { ++rejected; continue; }
+
+        // Match on containment, not equality, and then believe the container: its
+        // pointer is the real array base, ours may have overshot.
+        const Run* run = nullptr;
+        for (auto& r : runs)
+            if (slots >= r.base && slots < r.base + (uintptr_t)r.count * kElemStride) {
+                run = &r;
+                break;
+            }
+        if (!run) continue;
+        unsigned int declared = 0;
+        memcpy(&declared, c + kContSlotCount, 4);
+        int slotCount = (declared >= 1 && declared <= 4096) ? (int)declared
+                        : (int)(run->count - (int)((slots - run->base) / kElemStride));
+        ++good;
+
+        AppendReport(rep, Fmt(
+            "  CONTAINER at 0x%llX\r\n"
+            "    name=%s  width=%d height=%d version=%d class=%u stackGroup=%u isCool=%u\r\n"
+            "    slots array 0x%llX -- %d slots declared (handle+8 said %u; our scan\r\n"
+            "    reached %d elements from 0x%llX)\r\n",
+            (unsigned long long)cont, nm.empty() ? "(no name)" : nm.c_str(),
+            width, height, version, cls, ssg, c[kContIsCool],
+            (unsigned long long)slots, slotCount, declared,
+            run->count, (unsigned long long)run->base));
+        int shown = 0;
+        for (int k = 0; k < slotCount && shown < 40; ++k) {
+            ElemView e;
+            if (!ReadElem(slots + (size_t)k * kElemStride, &e)) break;
+            if (e.empty) continue;
+            AppendReport(rep, Fmt(
+                "      [%2d,%2d] %-18s %7d / %-7d  type=%u dmg=%.2f%s%s\r\n",
+                e.x, e.y, e.id, e.amount, e.maxAmount, e.type, e.damage,
+                e.installed ? " installed" : "", e.added ? " auto" : ""));
+            ++shown;
+        }
+        AppendReport(rep, "\r\n");
+    }
+
+    std::string verdict = good ? "INVENTORY FOUND" : "RUNS BUT NO CONTAINER";
+    AppendReport(rep, Fmt(
+        "VERDICT: %s\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  %llu element runs, %llu pointers to them, %d containers validated,\r\n"
+        "  %d candidates rejected as not actually containers\r\n"
+        "  probe took %llu ms\r\n",
+        verdict.c_str(), (unsigned long long)runs.size(),
+        (unsigned long long)handles.size(), good, rejected,
+        (unsigned long long)(GetTickCount64() - t0)));
+
+    WriteReportFile(outPath, rep);
+    logger::Pushf(good ? Level::Info : Level::Warn, "instprobe",
+                  "verdict %s: %llu element runs, %d containers validated, %.1f MB scanned "
+                  "in %llu ms | detail in %s",
+                  verdict.c_str(), (unsigned long long)runs.size(), good,
+                  (scanned + scannedB) / 1048576.0,
+                  (unsigned long long)(GetTickCount64() - t0), ToUtf8(outPath).c_str());
+
+    g_regions.clear();
+    g_regions.shrink_to_fit();
+    g_exclude.clear();
+}
+
+// One "probe run" is whichever probes are switched on, in the order that makes
+// sense: the metadata scan describes shapes, the instance scan uses them.
+void RunAll(int runNo) {
+    if (g_config.metaProbe) RunProbe(runNo);
+    if (g_config.instProbe) RunInstanceProbe(runNo);
+}
+
 DWORD WINAPI ProbeThread(LPVOID) {
     // Both halves matter: our own file hooks must not observe the probe's I/O,
     // and the vectored handler in crash.cpp must not log the faults the probe
@@ -959,14 +1403,14 @@ DWORD WINAPI ProbeThread(LPVOID) {
         if (GetFileAttributesW(sentinel.c_str()) != INVALID_FILE_ATTRIBUTES) break;
         Sleep(250);
     }
-    if (delay > 0) RunProbe(++runNo);
+    if (delay > 0) RunAll(++runNo);
 
     // Then on demand, so one session can be probed again after a save is loaded --
     // which is when the inventory containers actually exist.
     for (;;) {
         if (GetFileAttributesW(sentinel.c_str()) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileW(sentinel.c_str());
-            RunProbe(++runNo);
+            RunAll(++runNo);
         }
         Sleep(1000);
     }
@@ -977,10 +1421,11 @@ DWORD WINAPI ProbeThread(LPVOID) {
 namespace metaprobe {
 
 void Start() {
-    if (!g_config.metaProbe) return;
+    if (!g_config.metaProbe && !g_config.instProbe) return;
     logger::Pushf(Level::Info, "metaprobe",
-                  "metadata probe armed: first run in %ds, then on demand "
-                  "(drop a file named probe.now in %s to re-run)",
+                  "probe armed (metadata=%d instances=%d): first run in %ds, then on "
+                  "demand (drop a file named probe.now in %s to re-run)",
+                  g_config.metaProbe, g_config.instProbe,
                   g_config.metaProbeDelaySeconds, ToUtf8(g_outDir).c_str());
     HANDLE t = CreateThread(nullptr, 0, ProbeThread, nullptr, 0, nullptr);
     if (t) CloseHandle(t);

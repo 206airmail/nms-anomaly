@@ -110,12 +110,61 @@ caller-provided arrays — an MSVC requirement, not a style choice.
 observing the report being written *and* stops the vectored handler in
 `crash.cpp` logging the first-chance faults the probe provokes on purpose.
 
+## The instance probe (`InstProbe=1`)
+
+The metadata probe answers *what shape is a `cGcInventoryContainer`*. This one
+answers *where is one right now*, which is a different problem and the only part
+that needs a save loaded.
+
+It is a signature match rather than a search, because the layout is known.
+`cGcInventoryElement` is the anchor: its first field is a 16-byte NUL-padded ASCII
+item id (`CARBON`, `^LAUNCHFUEL`), which is far too structured to occur by
+accident, and the fields beside it constrain each other -- `Amount <= MaxAmount`,
+`DamageFactor` in [0,1], and two fields that can only be 0 or 1. Three phases:
+runs of elements; then one pass for pointers into those runs, since a dynamic-array
+handle sits at `container+0x10`; then validation of the container itself.
+
+Results go to `NMSLogger\instprobe_<n>.txt`. Set `MetaProbe=0` with
+`MetaProbeDelaySeconds=0` and trigger with `probe.now` once in game, or the first
+run fires at the main menu and reports nothing.
+
+**Every offset in it is measured, and only for one build** -- they come from
+`tools/nms_meta_extract.py` reading the descriptor table out of `NMS.exe`. After a
+game patch, re-extract before trusting any of them.
+
+### Three traps, all of which were hit while building it
+
+**Growing a run can overshoot.** `GrowRun` extends backwards from its anchor
+because the first slots of an inventory are usually empty, and it can run off the
+front of the array into neighbouring heap. So phase B searches for *every* element
+address in the run rather than the base it computed, and phase C believes the
+container's own pointer over the one the probe derived.
+
+**Reserve the target vector.** A growing vector of addresses leaves a copy of
+itself in freed heap at every reallocation, and a run of pointers into the element
+array is precisely what phase B hunts for -- so the probe finds its own discarded
+scratch and calls each copy a container. Same failure the metadata probe had, in a
+new disguise; see the note on `Hit` above.
+
+**Bound the enums.** `Class` and `StackSizeGroup` are enums, `Version` is a small
+save-format number, and a real container has at least one row and column. Without
+those bounds the probe reported nine containers where there was one, and their
+`Version` fields were the low halves of addresses.
+
 ### The positive control
 
-`test\run_test.ps1 -Probe` runs the probe against a synthetic table in
-`fake_nms.cpp`: eight records of a known size (0x28) naming real NMS classes,
-with member sub-tables of a known size (0x10), in both `.rdata` and the heap. The
-script fails if the probe does not recover all of that.
+`test\run_test.ps1 -Probe` runs both probes against synthetic data in
+`fake_nms.cpp`: eight class records of a known size (0x28) naming real NMS classes
+with member sub-tables of a known size (0x10), in both `.rdata` and the heap; and
+one inventory container with ten slots, two of them deliberately empty, built byte
+by byte at the measured offsets rather than as a C struct -- a compiler may pad a
+struct differently, and then a passing test would prove nothing about the real
+thing.
+
+The script asserts that **exactly one** container comes back and that its fields
+read out identically to what the fake wrote. That precision is the point: an
+earlier version asserted only that `CARBON` appeared somewhere, and it passed
+happily while the probe was reporting nine containers, eight of them junk.
 
 This is not ceremony. Without it, "found nothing" from the real game is ambiguous
 between *the game has no such table* and *the probe is broken*, which are the two

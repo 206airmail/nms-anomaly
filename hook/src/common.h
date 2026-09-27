@@ -41,6 +41,10 @@ struct Config {
     bool metaProbeScanHeap = true;     // pass 2 over private memory, not just the image
     int  metaProbeHeapBudgetMB = 2048; // cap on that pass, so a big session stays playable
     bool metaProbeScanCode = false;    // search code sections too; strings are not kept there
+    // The instance probe needs a save loaded to find anything, and it searches the
+    // heap rather than the image, so it gets its own budget.
+    bool instProbe = false;
+    int  instProbeBudgetMB = 6144;
 };
 extern Config g_config;
 

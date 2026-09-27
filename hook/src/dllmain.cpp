@@ -35,6 +35,8 @@ void LoadConfig() {
     g_config.metaProbeScanHeap = GetPrivateProfileIntW(L"hook", L"MetaProbeScanHeap", 1, ini.c_str()) != 0;
     g_config.metaProbeHeapBudgetMB = (int)GetPrivateProfileIntW(L"hook", L"MetaProbeHeapBudgetMB", 2048, ini.c_str());
     g_config.metaProbeScanCode = GetPrivateProfileIntW(L"hook", L"MetaProbeScanCode", 0, ini.c_str()) != 0;
+    g_config.instProbe = GetPrivateProfileIntW(L"hook", L"InstProbe", 0, ini.c_str()) != 0;
+    g_config.instProbeBudgetMB = (int)GetPrivateProfileIntW(L"hook", L"InstProbeBudgetMB", 6144, ini.c_str());
 }
 
 void Start() {
@@ -61,13 +63,14 @@ void Start() {
                   "config: modFileOpens=%d fileFailures=%d allFileOpens=%d firstChance=%d "
                   "moduleLoads=%d saveWrites=%d memory=%d debugPerSec=%d "
                   "metaProbe=%d metaProbeDelay=%ds metaProbeHeap=%d metaProbeBudget=%dMB "
-                  "metaProbeCode=%d",
+                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB",
                   g_config.logModFileOpens, g_config.logFileFailures, g_config.logAllFileOpens,
                   g_config.logFirstChanceExceptions, g_config.logModuleLoads,
                   g_config.logSaveWrites, g_config.logMemory, g_config.debugOutputPerSecond,
                   g_config.metaProbe, g_config.metaProbeDelaySeconds,
                   g_config.metaProbeScanHeap, g_config.metaProbeHeapBudgetMB,
-                  g_config.metaProbeScanCode);
+                  g_config.metaProbeScanCode, g_config.instProbe,
+                  g_config.instProbeBudgetMB);
     hooks::Install();
     crash::Install();
     metaprobe::Start();

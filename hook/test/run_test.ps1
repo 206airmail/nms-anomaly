@@ -58,10 +58,13 @@ MetaProbe=$(if ($Probe) { 1 } else { 0 })
 MetaProbeDelaySeconds=3
 MetaProbeScanHeap=1
 MetaProbeHeapBudgetMB=512
+InstProbe=$(if ($Probe) { 1 } else { 0 })
+InstProbeBudgetMB=512
 "@ | Set-Content $ini -Encoding ascii   # ASCII, not utf8: a BOM in front of
 # [hook] makes GetPrivateProfileIntW miss the section entirely and every setting
 # silently falls back to its default -- which looks exactly like a broken probe.
 Remove-Item "$bin\NMSLogger\metaprobe_*.txt" -ErrorAction SilentlyContinue
+Remove-Item "$bin\NMSLogger\instprobe_*.txt" -ErrorAction SilentlyContinue
 
 $out = Join-Path $env:TEMP 'NMSLoggerTest\session.txt'
 Remove-Item $out -ErrorAction SilentlyContinue
@@ -96,5 +99,37 @@ if ($Probe) {
         throw 'the probe found a table but not the 0x10 member records it was given'
     }
     Write-Host ""
-    Write-Host "positive control PASSED: the probe found the fake table and its member names."
+    Write-Host "metadata control PASSED: the probe found the fake table and its member names."
+
+    # The instance probe, against the synthetic inventory in fake_nms.cpp. Without
+    # this, a "no inventory found" from the real game cannot be told apart from a
+    # broken probe.
+    $inst = Get-ChildItem "$bin\NMSLogger\instprobe_*.txt" -ErrorAction SilentlyContinue
+    if (-not $inst) { throw 'the instance probe wrote no report -- it did not run' }
+    Write-Host ""
+    Write-Host "=== $($inst[0].FullName) ==="
+    Get-Content $inst[0].FullName
+    $itext = Get-Content $inst[0].FullName -Raw
+    if ($itext -notmatch 'VERDICT: INVENTORY FOUND') {
+        throw 'the instance probe missed its own positive control (report above)'
+    }
+    foreach ($needle in @('FakeFreighterStorage4', 'CARBON', '\^LAUNCHFUEL', 'FERRITE_DUST')) {
+        if ($itext -notmatch $needle) { throw "the instance probe did not report $needle" }
+    }
+    if ($itext -notmatch '10 slots declared') {
+        throw 'the instance probe did not read the slot count from the array handle'
+    }
+    # Count them. The fake builds exactly one container, and an earlier version of
+    # this test passed while the probe reported nine -- eight of them stale copies
+    # of its own scratch. Asserting presence is not enough; assert the absence of
+    # everything else.
+    $nContainers = ([regex]::Matches($itext, '(?m)^  CONTAINER at ')).Count
+    if ($nContainers -ne 1) {
+        throw "the instance probe reported $nContainers containers; the fake has exactly 1"
+    }
+    if ($itext -notmatch 'width=10 height=1 version=4 class=3 stackGroup=1 isCool=1') {
+        throw 'the container fields did not read back exactly as the fake wrote them'
+    }
+    Write-Host ""
+    Write-Host "instance control PASSED: container, slot count and item ids all recovered."
 }

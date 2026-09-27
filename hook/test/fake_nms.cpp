@@ -81,6 +81,83 @@ static void PublishFakeMetaTable() {
 }
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// A synthetic inventory: the positive control for the instance probe.
+//
+// Built byte by byte at measured offsets rather than as a C struct, because the
+// point is to reproduce the game's layout exactly -- a compiler is free to pad a
+// struct differently, and then a passing test would prove nothing about the real
+// thing. The offsets are the ones tools/nms_meta_extract.py read out of NMS.exe.
+//
+// cGcInventoryElement, 0x30 as an array element:
+//   +0x00 Id[16]  +0x10 X  +0x14 Y  +0x18 Amount  +0x1C DamageFactor
+//   +0x20 MaxAmount  +0x24 Type  +0x28 AddedAutomatically  +0x29 FullyInstalled
+// cGcInventoryContainer, 0x159:
+//   +0x10 Slots handle (ptr, then count)  +0x40 Class  +0x44 Height
+//   +0x4C StackSizeGroup  +0x50 Version  +0x54 Width  +0x58 Name[256]  +0x158 IsCool
+static void PublishFakeInventory() {
+    const size_t kElem = 0x30, kCont = 0x159, kSlots = 10;
+
+    unsigned char* slots = (unsigned char*)calloc(kSlots, kElem);
+    if (!slots) return;
+
+    struct Seed { const char* id; int x, y, amount, maxAmount; unsigned type; float dmg; };
+    // Two empty slots on purpose: a real inventory has them, and the probe has to
+    // grow a run across them rather than stopping at the first blank.
+    static const Seed seeds[] = {
+        {"CARBON",       0, 0,  250, 9999, 1, 0.0f},
+        {"OXYGEN",       1, 0,   48, 9999, 1, 0.0f},
+        {nullptr,        2, 0,    0,    0, 0, 0.0f},
+        {"^LAUNCHFUEL",  3, 0,    7,  100, 2, 0.25f},
+        {"FERRITE_DUST", 4, 0, 1200, 9999, 1, 0.0f},
+        {nullptr,        5, 0,    0,    0, 0, 0.0f},
+        {"TRITIUM",      6, 0,  999, 9999, 1, 0.0f},
+        {"CHROMATIC",    7, 0,   12,  250, 1, 0.5f},
+        {"SUNRISE",      8, 0,    1,    5, 2, 1.0f},
+        {"GOLD",         9, 0,  500, 9999, 1, 0.0f},
+    };
+    for (size_t k = 0; k < kSlots; ++k) {
+        unsigned char* e = slots + k * kElem;
+        const Seed& sd = seeds[k];
+        if (sd.id) {
+            size_t n = strlen(sd.id);
+            if (n > 15) n = 15;
+            memcpy(e + 0x00, sd.id, n);            // rest stays NUL from calloc
+            memcpy(e + 0x18, &sd.amount, 4);
+            memcpy(e + 0x1C, &sd.dmg, 4);
+            memcpy(e + 0x20, &sd.maxAmount, 4);
+            memcpy(e + 0x24, &sd.type, 4);
+            e[0x28] = (unsigned char)(k % 2);
+            e[0x29] = 1;
+        }
+        memcpy(e + 0x10, &sd.x, 4);
+        memcpy(e + 0x14, &sd.y, 4);
+    }
+
+    unsigned char* cont = (unsigned char*)calloc(1, kCont);
+    if (!cont) return;
+    unsigned long long slotsPtr = (unsigned long long)(void*)slots;
+    unsigned int count = (unsigned int)kSlots, cls = 3, ssg = 1, version = 4;
+    int width = 10, height = 1;
+    memcpy(cont + 0x10, &slotsPtr, 8);
+    memcpy(cont + 0x18, &count, 4);
+    memcpy(cont + 0x40, &cls, 4);
+    memcpy(cont + 0x44, &height, 4);
+    memcpy(cont + 0x4C, &ssg, 4);
+    memcpy(cont + 0x50, &version, 4);
+    memcpy(cont + 0x54, &width, 4);
+    const char* nm = "FakeFreighterStorage4";
+    memcpy(cont + 0x58, nm, strlen(nm));
+    cont[0x158] = 1;
+
+    char msg[256];
+    sprintf_s(msg, "fake inventory: %zu slots at %p, container at %p\n",
+              kSlots, (void*)slots, (void*)cont);
+    OutputDebugStringA(msg);
+    // Leaked on purpose: the probe has to find it while the process is alive.
+}
+// ---------------------------------------------------------------------------
+
 static LONG WINAPI GameFilter(EXCEPTION_POINTERS*) {
     OutputDebugStringA("fake game crash filter ran\n");
     return EXCEPTION_EXECUTE_HANDLER;
@@ -93,6 +170,7 @@ static void HandledAccessViolation() {
 int wmain(int argc, wchar_t** argv) {
     SetUnhandledExceptionFilter(GameFilter);   // like NMS registering its dump writer
     PublishFakeMetaTable();
+    PublishFakeInventory();
     char state[16] = {};
     XInputGetState(0, state);
 
