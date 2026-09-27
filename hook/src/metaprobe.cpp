@@ -1461,10 +1461,26 @@ void RunInstanceProbe(int runNo) {
         return;
     }
 
-    for (size_t i = 0; i < runs.size() && i < 40; ++i)
-        AppendReport(rep, Fmt("  run %2llu: 0x%llX  %d slots, %d occupied\r\n",
+    // What is IN each run, not just how big it is. The first version of this listed
+    // 111 runs by address and size and printed the contents of only the eight that
+    // phase C happened to select -- all of which were mission tables. That was read
+    // as "no inventory exists anywhere", when in truth 103 runs had never been
+    // looked inside. An address and a count cannot tell an inventory from a stats
+    // table; the ids can.
+    for (size_t i = 0; i < runs.size() && i < 160; ++i) {
+        AppendReport(rep, Fmt("  run %3llu: 0x%llX  %d slots, %d occupied  ",
                               (unsigned long long)i, (unsigned long long)runs[i].base,
                               runs[i].count, runs[i].nonEmpty));
+        int shownIds = 0;
+        for (int k = 0; k < runs[i].count && shownIds < 8; ++k) {
+            ElemView e;
+            if (!ReadElem(runs[i].base + (size_t)k * kElemStride, &e)) break;
+            if (e.empty) continue;
+            AppendReport(rep, Fmt("%s%s x%d", shownIds ? ", " : "", e.id, e.amount));
+            ++shownIds;
+        }
+        AppendReport(rep, "\r\n");
+    }
     AppendReport(rep, "\r\n");
 
     // ---- phase B: who points at those runs? --------------------------------
@@ -1740,11 +1756,282 @@ void RunInstanceProbe(int runNo) {
     g_exclude.clear();
 }
 
+
+// ---------------------------------------------------------------------------
+// STRING HUNT -- does the running game hold item ids as text at all?
+//
+// Two probes have now failed to find an inventory, and the reason is the same
+// each time: both assumed cGcInventoryElement.Id is a 16-byte ASCII item id in
+// live memory, because that is what the *serialisation* schema says. Across 7.3 GB
+// the only 16-byte upper-case ids found were mission identifiers -- WORMHUNT,
+// EGG_PODS, POLO_PROGRESS. Not one substance or product.
+//
+// The likely explanation is that the class table describes the SAVE format, and
+// the runtime interns item ids as hashes instead of strings. That would be an
+// entirely ordinary engine choice, and it would mean no amount of adjusting
+// thresholds on the old signature can ever work.
+//
+// This settles it, and carries its own control. The product tables in .rdata must
+// contain these ids as literal text -- the game has to read them from the MBINs at
+// some point -- so a hit in the image proves the search works. A hit in the image
+// and none on the heap is then a real answer rather than a broken search:
+//
+//   image + heap  -> ids are text at runtime; dump around a heap hit to find the
+//                    real live layout, which is not the serialised one
+//   image only    -> ids are hashed at runtime. Stop scanning for leaves, find the
+//                    root object and chase pointers instead
+//   neither       -> the search itself is broken, and nothing else here means
+//                    anything
+constexpr int kMaxHuntNames = 128;
+constexpr int kMaxHuntHitsPerName = 6;
+
+// One pass over memory testing every pattern at each position, instead of one pass
+// per pattern. The first version took nineteen minutes on eighteen names because it
+// re-walked all 8 GB for each one; cost scaled with the number of names, which is
+// exactly backwards for a list meant to grow.
+//
+// Nearly every position is rejected by a single table lookup: only bytes that begin
+// some pattern are worth a memcmp, and in a binary that is a small fraction.
+struct HuntSet {
+    const char* pat[kMaxHuntNames];
+    int         len[kMaxHuntNames];
+    int         count;
+    // For each possible first byte, which patterns start with it.
+    unsigned char byFirst[256][16];
+    unsigned char nByFirst[256];
+};
+
+void BuildHuntSet(HuntSet* hs, const std::vector<std::string>& names) {
+    memset(hs->nByFirst, 0, sizeof(hs->nByFirst));
+    hs->count = 0;
+    for (auto& n : names) {
+        if (n.empty() || hs->count >= kMaxHuntNames) continue;
+        unsigned char c0 = (unsigned char)n[0];
+        if (hs->nByFirst[c0] >= 16) continue;      // 16 patterns per first byte is plenty
+        hs->pat[hs->count] = n.c_str();
+        hs->len[hs->count] = (int)n.size();
+        hs->byFirst[c0][hs->nByFirst[c0]++] = (unsigned char)hs->count;
+        ++hs->count;
+    }
+}
+
+// POD-only and SEH-guarded, like every other scan here.
+int ScanForPatterns(const HuntSet* hs, uintptr_t base, size_t size,
+                    uintptr_t* hitAt, int* hitPat, int outMax,
+                    int* faulted, size_t* scanned) {
+    int n = 0;
+    *faulted = 0;
+    *scanned = 0;
+    if (outMax <= 0 || size < 8) return 0;
+    const unsigned char* p = (const unsigned char*)base;
+    const unsigned char* end = (const unsigned char*)(base + size) - 32;
+    __try {
+        for (; p < end; ++p) {
+            unsigned char c0 = *p;
+            int cnt = hs->nByFirst[c0];
+            if (!cnt) continue;
+            for (int k = 0; k < cnt; ++k) {
+                int pi = hs->byFirst[c0][k];
+                int len = hs->len[pi];
+                if (memcmp(p, hs->pat[pi], (size_t)len) != 0) continue;
+                if (p[len] != '\0') continue;                  // whole token only
+                unsigned char b = (p > (const unsigned char*)base) ? p[-1] : 0;
+                if (b && ((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+                          (b >= '0' && b <= '9') || b == '_' || b == '^')) continue;
+                hitAt[n] = (uintptr_t)p;
+                hitPat[n] = pi;
+                ++n;
+                break;
+            }
+            if (n >= outMax) break;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = 1;
+    }
+    *scanned = (size_t)((const unsigned char*)p - (const unsigned char*)base);
+    return n;
+}
+
+std::vector<std::string> ReadHuntList() {
+    std::vector<std::string> out;
+    std::wstring path = g_outDir + L"probe_strings.txt";
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        std::string text;
+        char buf[8192];
+        DWORD got = 0;
+        while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got) text.append(buf, got);
+        CloseHandle(h);
+        size_t i = 0;
+        while (i < text.size() && (int)out.size() < kMaxHuntNames) {
+            size_t e = text.find_first_of("\r\n", i);
+            if (e == std::string::npos) e = text.size();
+            std::string line = text.substr(i, e - i);
+            i = e + 1;
+            size_t a = line.find_first_not_of(" \t");
+            if (a == std::string::npos) continue;
+            size_t b = line.find_last_not_of(" \t");
+            line = line.substr(a, b - a + 1);
+            if (!line.empty() && line[0] != '#') out.push_back(line);
+        }
+    }
+    if (out.empty()) {
+        // Ordinary early-game substances and technologies. A wrong guess costs a
+        // "not found" line, so the list is broad rather than careful.
+        static const char* kDefaults[] = {
+            "CARBON", "OXYGEN", "SODIUM", "FERRITE_DUST", "PURE_FERRITE",
+            "MAGNETISED_FERRITE", "TRITIUM", "DI_HYDROGEN", "CHROMATIC_METAL",
+            "COPPER", "GOLD", "SILVER", "PLATINUM", "PUGNEUM", "SALT",
+            "LAUNCHFUEL", "^LAUNCHFUEL", "^CARBON", "^OXYGEN", "^TRITIUM",
+            "LAUNCHSUB1", "SHIPJUMP1", "HYPERDRIVE", "PROTECT", "HEALTH",
+        };
+        for (const char* d : kDefaults) out.push_back(d);
+    }
+    return out;
+}
+
+void RunStringHunt(int runNo) {
+    ULONGLONG t0 = GetTickCount64();
+    std::string rep;
+    std::wstring outPath = g_outDir + L"stringhunt_" + std::to_wstring(runNo) + L".txt";
+
+    ReadImageInfo();
+    BuildRegionMap();
+    ULONG_PTR stackLo = 0, stackHi = 0;
+    GetCurrentThreadStackLimits(&stackLo, &stackHi);
+
+    std::vector<std::string> names = ReadHuntList();
+    AppendReport(rep, Fmt(
+        "NMS string hunt -- run %d, hook " NMSLOG_HOOK_VERSION "\r\n"
+        "================================================================\r\n"
+        "Are item ids held as text in the running game? The product tables in\r\n"
+        ".rdata must contain them, so an image hit proves the search works. An\r\n"
+        "image hit with nothing on the heap means the runtime interns them as\r\n"
+        "something other than text, and scanning for leaf objects cannot work.\r\n\r\n"
+        "build:   NMS.exe base 0x%llX  timestamp 0x%08lX\r\n"
+        "hunting: %llu strings\r\n\r\n",
+        runNo, (unsigned long long)g_img.base, g_img.timeStamp,
+        (unsigned long long)names.size()));
+
+    struct HuntHit { uintptr_t at; int nameIdx; bool image; };
+    std::vector<HuntHit> hits;
+    size_t scanned = 0, sinceYield = 0;
+    size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
+
+    HuntSet hs;
+    BuildHuntSet(&hs, names);
+    constexpr int kHitsPerRegion = 4096;
+    std::vector<uintptr_t> at(kHitsPerRegion);
+    std::vector<int> pat(kHitsPerRegion);
+
+    for (int phase = 0; phase < 2; ++phase) {          // 0 = image (the control), 1 = heap
+        for (size_t ri = 0; ri < g_regions.size(); ++ri) {
+            const Region& r = g_regions[ri];
+            bool isImage = r.type == MEM_IMAGE;
+            if (phase == 0 && !isImage) continue;
+            if (phase == 1) {
+                if (r.type != MEM_PRIVATE) continue;
+                if ((uintptr_t)stackLo >= r.base && (uintptr_t)stackLo < r.base + r.size) continue;
+                if (scanned >= budget) break;
+            }
+            int faulted = 0;
+            size_t did = 0;
+            int n = ScanForPatterns(&hs, r.base, r.size, at.data(), pat.data(),
+                                    kHitsPerRegion, &faulted, &did);
+            for (int k = 0; k < n; ++k) {
+                int already = 0;
+                for (auto& h : hits)
+                    if (h.nameIdx == pat[k] && h.image == isImage) ++already;
+                if (already < kMaxHuntHitsPerName)
+                    hits.push_back(HuntHit{at[k], pat[k], isImage});
+            }
+            scanned += did;
+            sinceYield += did;
+            if (sinceYield >= kThrottleEvery) { sinceYield = 0; Sleep(1); }
+        }
+    }
+
+    int inImage = 0, inHeap = 0, namesInImage = 0, namesInHeap = 0;
+    for (size_t ni = 0; ni < names.size(); ++ni) {
+        int im = 0, hp = 0;
+        for (auto& h : hits) {
+            if (h.nameIdx != (int)ni) continue;
+            if (h.image) ++im; else ++hp;
+        }
+        inImage += im;
+        inHeap += hp;
+        if (im) ++namesInImage;
+        if (hp) ++namesInHeap;
+        AppendReport(rep, Fmt("  %-22s image:%-3d heap:%d\r\n", names[ni].c_str(), im, hp));
+    }
+
+    AppendReport(rep, Fmt(
+        "\r\n  %d of %llu found in the image, %d of %llu on the heap "
+        "(%d and %d hits)\r\n  scanned %.1f MB in one pass over all patterns\r\n\r\n",
+        namesInImage, (unsigned long long)names.size(), namesInHeap,
+        (unsigned long long)names.size(), inImage, inHeap, scanned / 1048576.0));
+
+    // Heap hits are the interesting ones: dump around them, because if ids ARE text
+    // at runtime then the bytes beside one show the real live layout.
+    int shown = 0;
+    for (auto& h : hits) {
+        if (h.image || shown >= 6) continue;
+        ++shown;
+        AppendReport(rep, Fmt("  --- heap hit: \"%s\" at 0x%llX\r\n",
+                              names[h.nameIdx].c_str(), (unsigned long long)h.at));
+        for (long off = -0x30; off <= 0x40; off += 8) {
+            uintptr_t a = (uintptr_t)((long long)h.at + off);
+            if (!Readable(a, 8)) continue;
+            uintptr_t v = 0;
+            if (!SafeRead(a, &v, 8)) continue;
+            unsigned int lo = (unsigned)(v & 0xFFFFFFFF), hi = (unsigned)(v >> 32);
+            AppendReport(rep, Fmt("      %+4ld  %016llX  u32 %-11u %-11u %s%s\r\n",
+                                  off, (unsigned long long)v, lo, hi,
+                                  Annotate(v).c_str(), off == 0 ? "  <== the string" : ""));
+        }
+        AppendReport(rep, "\r\n");
+    }
+
+    const char* verdict = (!namesInImage && !namesInHeap) ? "SEARCH FOUND NOTHING AT ALL"
+                        : (namesInHeap ? "IDS ARE TEXT AT RUNTIME"
+                                       : "IDS ARE NOT TEXT AT RUNTIME");
+    const char* meaning =
+        (!namesInImage && !namesInHeap)
+            ? "  Not even the image matched, so the search is broken or the id list is\r\n"
+              "  wrong. Nothing else in this report means anything until that is fixed.\r\n"
+        : (namesInHeap
+            ? "  Item ids exist as text on the heap. The live layout is not the\r\n"
+              "  serialised one, but it can be read off the dumps above.\r\n"
+            : "  The image has them and the heap does not: the runtime interns item ids\r\n"
+              "  as something other than text, so the class table describes the save\r\n"
+              "  format rather than the live object. Scanning for leaf objects cannot\r\n"
+              "  work. Find a root object and chase pointers, or hook a function.\r\n");
+
+    AppendReport(rep, Fmt(
+        "VERDICT: %s\r\n"
+        "----------------------------------------------------------------\r\n%s"
+        "\r\n  hunt took %llu ms\r\n",
+        verdict, meaning, (unsigned long long)(GetTickCount64() - t0)));
+
+    WriteReportFile(outPath, rep);
+    logger::Pushf(Level::Info, "stringhunt",
+                  "verdict %s: %d/%llu ids in the image, %d/%llu on the heap, %.1f MB "
+                  "scanned in %llu ms | detail in %s",
+                  verdict, namesInImage, (unsigned long long)names.size(), namesInHeap,
+                  (unsigned long long)names.size(), scanned / 1048576.0,
+                  (unsigned long long)(GetTickCount64() - t0), ToUtf8(outPath).c_str());
+
+    g_regions.clear();
+    g_regions.shrink_to_fit();
+}
+
 // One "probe run" is whichever probes are switched on, in the order that makes
 // sense: the metadata scan describes shapes, the instance scan uses them.
 void RunAll(int runNo) {
     if (g_config.metaProbe) RunProbe(runNo);
     if (g_config.instProbe) RunInstanceProbe(runNo);
+    if (g_config.stringHunt) RunStringHunt(runNo);
 }
 
 DWORD WINAPI ProbeThread(LPVOID) {
@@ -1781,7 +2068,7 @@ DWORD WINAPI ProbeThread(LPVOID) {
 namespace metaprobe {
 
 void Start() {
-    if (!g_config.metaProbe && !g_config.instProbe) return;
+    if (!g_config.metaProbe && !g_config.instProbe && !g_config.stringHunt) return;
     logger::Pushf(Level::Info, "metaprobe",
                   "probe armed (metadata=%d instances=%d): first run in %ds, then on "
                   "demand (drop a file named probe.now in %s to re-run)",

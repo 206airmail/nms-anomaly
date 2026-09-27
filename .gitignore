@@ -50,3 +50,12 @@ tools/*.exe
 .idea/
 .DS_Store
 Thumbs.db
+
+# ---- extracted game data and anything derived from it ----
+# nms_item_ids.py unpacks vanilla tables and localisation files out of the paks to
+# build the item database. Those are Hello Games' files, not ours to redistribute,
+# and every user regenerates them against their own install anyway.
+tools/_itemgen/
+tools/nms_items.json
+tools/nms_items_ids.txt
+tools/nms_classes.json
