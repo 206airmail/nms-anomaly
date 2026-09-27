@@ -293,9 +293,16 @@ static void PublishFakePlayerState() {
 // nearly all the work in the real scan.
 static void PublishFakeLiveInventories() {
     struct Seed { const char* id; int amount; int x, y; };
+    // The awkward-but-real cases, which is the whole point of them being here. The
+    // first live run validated ZERO inventories because Nick's suit holds an item
+    // the UI shows as "inf 1,307" -- an unbounded stack whose MaxAmount is not >= 1
+    // -- and one such slot vetoed all 32. A fixture where every stack is a tidy
+    // x/9999 cannot catch that, and did not.
     static const Seed suit[] = {
         {"FUEL1", 2163, 4, 0}, {"SAND1", 820, 6, 1}, {"LAND1", 5319, 2, 0},
         {"CATALYST1", 1430, 3, 0}, {"OXYGEN", 618, 6, 0},
+        {"^JET1", 1, 0, 3},          // installed technology: '^' prefix
+        {"TRA_MINERALS3", 1307, 1, 0},   // unbounded stack, MaxAmount 0
     };
     static const Seed ship[] = {
         {"FUEL1", 971, 3, 1}, {"ASTEROID1", 445, 0, 0},
@@ -305,7 +312,7 @@ static void PublishFakeLiveInventories() {
     };
     struct Build { const Seed* seeds; int n; int slots; int w, h; size_t gap; };
     static const Build builds[] = {
-        {suit,  5, 32, 10, 12, 0},
+        {suit,  7, 32, 10, 12, 0},
         {ship,  2, 32, 10,  5, 0x1A0},      // irregular gaps, like the real ones
         {chest, 2, 16, 10,  6, 0x248},
     };
@@ -323,7 +330,10 @@ static void PublishFakeLiveInventories() {
             unsigned char* e = arr + (size_t)k * 0x30;
             const Seed& sd = builds[b].seeds[k];
             memcpy(e + 0x00, sd.id, strlen(sd.id));
+            // MaxAmount 0 for the unbounded stack, and 1 for installed technology.
             int mx = 9999;
+            if (strcmp(sd.id, "TRA_MINERALS3") == 0) mx = 0;
+            if (sd.id[0] == '^') mx = 1;
             memcpy(e + 0x10, &sd.x, 4);
             memcpy(e + 0x14, &sd.y, 4);
             memcpy(e + 0x18, &sd.amount, 4);

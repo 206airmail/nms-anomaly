@@ -1595,33 +1595,61 @@ int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outM
     return n;
 }
 
-// Every declared slot must parse as an element, and at least one must hold an item.
+// The slot test phase L uses: id shape only.
+//
+// Deliberately NOT ReadElem, whose stack-sanity rules are right for finding element
+// runs and wrong here. Returns 0 for a malformed slot, 1 for an empty one, 2 for a
+// slot holding an item.
+int SlotShape(uintptr_t a, char* idOut, int idCap) {
+    unsigned char b[kElemStride];
+    if (!Readable(a, kElemStride) || !SafeRead(a, b, kElemStride)) return 0;
+    int n = 0;
+    while (n < 16 && b[kElemId + n] != 0) ++n;
+    if (n == 0) {
+        for (int i = 0; i < 16; ++i) if (b[kElemId + i] != 0) return 0;
+        return 1;                                   // properly empty
+    }
+    if (n < 2 || n > 15) return 0;                  // 15 so the NUL padding exists
+    for (int i = 0; i < n; ++i) if (!IdChar(b[kElemId + i])) return 0;
+    for (int i = n; i < 16; ++i) if (b[kElemId + i] != 0) return 0;
+    if (idOut && idCap > 0) {
+        int i = 0;
+        for (; i < idCap - 1 && i < n; ++i) idOut[i] = (char)b[kElemId + i];
+        idOut[i] = '\0';
+    }
+    return 2;
+}
+
+// Every declared slot must be well-formed, and at least one must hold an item.
 // "Every one" rather than "the first one" is what separates a real inventory from a
-// coincidence: the only false positives this left in the whole process were a
-// handful of `Vec4` shader strings.
+// coincidence: across a whole 10 GB process this left only a few `Vec4` shader
+// strings. What it must NOT do is judge the arithmetic -- an unbounded stack has no
+// sane MaxAmount and is still a real item.
+unsigned int InvReasons[6];
+
 bool InventoryIsReal(uintptr_t obj, unsigned int* slotsOut, char* firstId, int idCap) {
     unsigned int count = 0;
     uintptr_t ptr = 0;
-    if (!SafeRead(obj + kInvCountA, &count, 4)) return false;
-    if (!SafeRead(obj + kInvSlotsPtr, &ptr, 8)) return false;
-    if (count == 0 || count > kInvMaxSlots) return false;
-    if (!Readable(ptr, (size_t)count * kElemStride)) return false;
-    bool anyItem = false;
+    if (!SafeRead(obj + kInvCountA, &count, 4)) { ++InvReasons[0]; return false; }
+    if (!SafeRead(obj + kInvSlotsPtr, &ptr, 8)) { ++InvReasons[0]; return false; }
+    if (count == 0 || count > kInvMaxSlots) { ++InvReasons[1]; return false; }
+    if (!Readable(ptr, (size_t)count * kElemStride)) { ++InvReasons[2]; return false; }
+    int items = 0;
     for (unsigned int k = 0; k < count; ++k) {
-        ElemView e;
-        if (!ReadElem(ptr + (uintptr_t)k * kElemStride, &e)) return false;
-        if (e.empty) continue;
-        if (e.maxAmount <= 0 || e.maxAmount > 100000) return false;
-        if (e.amount < 0 || e.amount > e.maxAmount * 4) return false;
-        if (!anyItem && firstId && idCap > 0) {
+        char id[24] = {0};
+        int sh = SlotShape(ptr + (uintptr_t)k * kElemStride, id, sizeof(id));
+        if (sh == 0) { ++InvReasons[3]; return false; }
+        if (sh == 1) continue;
+        if (!items && firstId && idCap > 0) {
             int i = 0;
-            for (; i < idCap - 1 && e.id[i]; ++i) firstId[i] = e.id[i];
+            for (; i < idCap - 1 && id[i]; ++i) firstId[i] = id[i];
             firstId[i] = '\0';
         }
-        anyItem = true;
+        ++items;
     }
+    if (!items) { ++InvReasons[4]; return false; }
     if (slotsOut) *slotsOut = count;
-    return anyItem;
+    return true;
 }
 
 // Live inventories, by the layout measured against the running game.
@@ -1671,6 +1699,7 @@ int FindLiveInventories(std::string& rep) {
         stage[0], stage[1], stage[2], (unsigned long long)cand.size()));
 
     int found = 0;
+    memset(InvReasons, 0, sizeof(InvReasons));
     for (size_t i = 0; i < cand.size(); ++i) {
         unsigned int slots = 0;
         char firstId[24] = {0};
@@ -1687,15 +1716,28 @@ int FindLiveInventories(std::string& rep) {
                               (unsigned long long)ptr));
         int shown = 0;
         for (unsigned int k = 0; k < slots && shown < 10; ++k) {
-            ElemView e;
-            if (!ReadElem(ptr + (uintptr_t)k * kElemStride, &e)) break;
-            if (e.empty) continue;
-            AppendReport(rep, Fmt("%s%s x%d @(%d,%d)", shown ? ", " : "",
-                                  e.id, e.amount, e.x, e.y));
+            uintptr_t ea = ptr + (uintptr_t)k * kElemStride;
+            char id[24] = {0};
+            if (SlotShape(ea, id, sizeof(id)) != 2) continue;
+            int amount = 0, maxAmount = 0, x = 0, y = 0;
+            SafeRead(ea + kElemAmount, &amount, 4);
+            SafeRead(ea + kElemMaxAmount, &maxAmount, 4);
+            SafeRead(ea + kElemIndexX, &x, 4);
+            SafeRead(ea + kElemIndexY, &y, 4);
+            AppendReport(rep, Fmt("%s%s x%d/%d @(%d,%d)", shown ? ", " : "",
+                                  id, amount, maxAmount, x, y));
             ++shown;
         }
         AppendReport(rep, "\r\n");
     }
+    AppendReport(rep, Fmt(
+        "\r\n  why the rest were not inventories:\r\n"
+        "    handle unreadable      %u\r\n"
+        "    count out of range     %u\r\n"
+        "    slot array unreadable  %u\r\n"
+        "    a slot was malformed   %u\r\n"
+        "    every slot was empty   %u\r\n",
+        InvReasons[0], InvReasons[1], InvReasons[2], InvReasons[3], InvReasons[4]));
     AppendReport(rep, Fmt("\r\n  %d objects held a fully-parsing slot array with items\r\n"
                           "  (identify which is which by CONTENTS -- they sit at irregular\r\n"
                           "   offsets in one allocation, so there is no index to rely on)\r\n\r\n",

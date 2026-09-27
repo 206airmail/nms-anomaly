@@ -127,8 +127,16 @@ if ($Probe) {
     if ($itext -notmatch 'VERDICT: LIVE INVENTORIES FOUND \(3\)') {
         throw 'phase L did not find exactly the 3 live-layout inventories'
     }
-    foreach ($needle in @('FUEL1 x2163 @\(4,0\)', 'SAND1 x820 @\(6,1\)',
-                          'FUEL1 x971 @\(3,1\)', 'REACTION2 x4 @\(8,0\)')) {
+    # The unbounded stack is asserted explicitly: it is the exact case that made the
+    # first live run validate zero inventories.
+    if ($itext -notmatch 'TRA_MINERALS3 x1307/0') {
+        throw 'phase L dropped the unbounded stack (MaxAmount 0) -- one odd slot must not veto an inventory'
+    }
+    if ($itext -notmatch '\^JET1 x1/1') {
+        throw 'phase L dropped the installed technology (caret-prefixed id)'
+    }
+    foreach ($needle in @('FUEL1 x2163/9999 @\(4,0\)', 'SAND1 x820/9999 @\(6,1\)',
+                          'FUEL1 x971/9999 @\(3,1\)', 'REACTION2 x4/9999 @\(8,0\)')) {
         if ($itext -notmatch $needle) {
             throw "phase L did not report $needle with its grid position"
         }
