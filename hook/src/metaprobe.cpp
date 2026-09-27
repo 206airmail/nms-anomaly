@@ -1173,7 +1173,7 @@ void RunInstanceProbe(int runNo) {
 
     // ---- phase A: runs of inventory elements -------------------------------
     std::vector<Run> runs;
-    size_t scanned = 0, cands = 0, faultedRegions = 0;
+    size_t scanned = 0, filterHits = 0, faultedRegions = 0;
     size_t budget = (size_t)g_config.instProbeBudgetMB << 20;
     size_t sinceYield = 0;
     bool truncated = false;
@@ -1190,7 +1190,7 @@ void RunInstanceProbe(int runNo) {
                                       &faulted, &did);
         scanned += did;
         sinceYield += did;
-        cands += (size_t)n;
+        filterHits += (size_t)n;
         if (faulted) ++faultedRegions;
         for (int k = 0; k < n && (int)runs.size() < kMaxRuns; ++k) {
             ElemView e;
@@ -1214,7 +1214,7 @@ void RunInstanceProbe(int runNo) {
         "  %llu regions faulted mid-scan\r\n\r\n",
         scanned / 1048576.0,
         truncated ? "  (TRUNCATED -- raise InstProbeBudgetMB)" : "",
-        (unsigned long long)cands, (unsigned long long)runs.size(),
+        (unsigned long long)filterHits, (unsigned long long)runs.size(),
         (unsigned long long)faultedRegions));
 
     if (runs.empty()) {
@@ -1289,50 +1289,123 @@ void RunInstanceProbe(int runNo) {
         (unsigned long long)kContSlots, (unsigned long long)targets.size(),
         scannedB / 1048576.0, (unsigned long long)handles.size()));
 
-    // ---- phase C: validate the container and show what is in it ------------
-    int good = 0, rejected = 0;
+    // ---- phase C: what actually holds a pointer to an element array? -------
+    //
+    // The first version of this asserted a layout -- container+0x10 is the Slots
+    // handle, so subtract 0x10 -- and threw away everything that failed. Against
+    // the real game that rejected all 250 candidates and reported no reason, which
+    // is the least useful possible outcome. The fake could not have caught it
+    // either: the synthetic container was built to the same assumption, so it
+    // tested the probe against itself rather than against No Man's Sky.
+    //
+    // So this no longer decides. It accounts for *why* each candidate fails, tries
+    // the plausible bases rather than one, and dumps raw memory around the pointer
+    // so the real layout can be read off the page the way the class descriptor was.
+    int good = 0;
+
+    struct Cand {
+        uintptr_t at;         // address of the pointer
+        uintptr_t target;     // what it points at
+        int       runIdx;
+        int       elemIdx;    // which slot within the run
+        int       why;        // index into kReasons; 7 means it validated
+    };
+    std::vector<Cand> cands;
     for (uintptr_t h : handles) {
-        if (h < kContSlots) continue;
-        uintptr_t cont = h - kContSlots;
-        if (!Readable(cont, kContSize)) continue;
+        Cand c{h, 0, -1, -1, 0};
+        if (!Readable(h, 8) || !SafeRead(h, &c.target, 8)) continue;
+        for (size_t i = 0; i < runs.size(); ++i) {
+            const Run& r = runs[i];
+            if (c.target >= r.base && c.target < r.base + (uintptr_t)r.count * kElemStride) {
+                c.runIdx = (int)i;
+                c.elemIdx = (int)((c.target - r.base) / kElemStride);
+                break;
+            }
+        }
+        if (c.runIdx >= 0) cands.push_back(c);
+    }
+
+    // A container's Slots pointer points at element zero. A pointer into the middle
+    // of an array is more likely an iterator or a cursor, so the ones aimed at a
+    // base -- and at the biggest arrays -- are examined first.
+    std::sort(cands.begin(), cands.end(), [&](const Cand& a, const Cand& b) {
+        bool a0 = a.elemIdx == 0, b0 = b.elemIdx == 0;
+        if (a0 != b0) return a0;
+        return runs[a.runIdx].count > runs[b.runIdx].count;
+    });
+
+    // Why does the original hypothesis fail? Count the first check each candidate
+    // trips, rather than reporting a bare zero.
+    const char* kReasons[] = {"unreadable at base", "width/height", "version",
+                              "class/stackGroup", "isCool", "name not a string256",
+                              "slots pointer mismatch", "passed"};
+    int reasonCount[8] = {0};
+    for (Cand& cd : cands) {
+        uintptr_t cont = cd.at >= kContSlots ? cd.at - kContSlots : 0;
+        int why = 7;
+        unsigned char c[kContSize];
+        int width = 0, height = 0, version = 0;
+        unsigned int cls = 0, ssg = 0;
+        uintptr_t slots = 0;
+        std::string nm;
+        if (!cont || !Readable(cont, kContSize) || !SafeRead(cont, c, kContSize)) {
+            why = 0;
+        } else {
+            memcpy(&width, c + kContWidth, 4);
+            memcpy(&height, c + kContHeight, 4);
+            memcpy(&version, c + kContVersion, 4);
+            memcpy(&cls, c + kContClass, 4);
+            memcpy(&ssg, c + kContStackGroup, 4);
+            memcpy(&slots, c + kContSlots, 8);
+            if (width < 1 || width > 4096 || height < 1 || height > 4096) why = 1;
+            else if (version < 0 || version > 10000) why = 2;
+            else if (cls > 255 || ssg > 255) why = 3;
+            else if (c[kContIsCool] > 1) why = 4;
+            else if (!ContainerName(cont, &nm)) why = 5;
+            else if (slots != cd.target) why = 6;
+        }
+        cd.why = why;
+        ++reasonCount[why];
+        if (why == 7) ++good;
+    }
+
+    AppendReport(rep, Fmt(
+        "PHASE C -- what holds those pointers?\r\n"
+        "----------------------------------------------------------------\r\n"
+        "  %llu of %llu pointers aim inside a known run; %llu aim at a run's first\r\n"
+        "  element, which is where a Slots handle would point.\r\n\r\n"
+        "  Testing the original hypothesis (container = pointer address - 0x%llX),\r\n"
+        "  first check each candidate fails:\r\n",
+        (unsigned long long)cands.size(), (unsigned long long)handles.size(),
+        (unsigned long long)std::count_if(cands.begin(), cands.end(),
+                                          [](const Cand& c) { return c.elemIdx == 0; }),
+        (unsigned long long)kContSlots));
+    for (int i = 0; i < 8; ++i)
+        if (reasonCount[i])
+            AppendReport(rep, Fmt("    %-24s %d\r\n", kReasons[i], reasonCount[i]));
+    AppendReport(rep, "\r\n");
+
+    // Whatever validated, show what is in it -- this is the actual deliverable, and
+    // the only part a caller of this probe would want.
+    for (const Cand& cd : cands) {
+        if (cd.why != 7) continue;
+        uintptr_t cont = cd.at - kContSlots;
         unsigned char c[kContSize];
         if (!SafeRead(cont, c, kContSize)) continue;
         int width = 0, height = 0, version = 0;
+        unsigned int cls = 0, ssg = 0, declared = 0;
+        uintptr_t slots = 0;
         memcpy(&width, c + kContWidth, 4);
         memcpy(&height, c + kContHeight, 4);
         memcpy(&version, c + kContVersion, 4);
-        unsigned int cls = 0, ssg = 0;
         memcpy(&cls, c + kContClass, 4);
         memcpy(&ssg, c + kContStackGroup, 4);
-        uintptr_t slots = 0;
-        memcpy(&slots, c + kContSlots, 8);
-        // These bounds are what separates a container from a fragment of some
-        // pointer table: Class and StackSizeGroup are enums, Version is a save
-        // format number, and a real container has at least one row and column.
-        // Without them the probe reported nine containers where there was one, and
-        // their Version fields were the low halves of addresses.
-        std::string nm;
-        if (width < 1 || width > 4096 || height < 1 || height > 4096) { ++rejected; continue; }
-        if (version < 0 || version > 10000) { ++rejected; continue; }
-        if (cls > 255 || ssg > 255) { ++rejected; continue; }
-        if (c[kContIsCool] > 1) { ++rejected; continue; }
-        if (!ContainerName(cont, &nm)) { ++rejected; continue; }
-
-        // Match on containment, not equality, and then believe the container: its
-        // pointer is the real array base, ours may have overshot.
-        const Run* run = nullptr;
-        for (auto& r : runs)
-            if (slots >= r.base && slots < r.base + (uintptr_t)r.count * kElemStride) {
-                run = &r;
-                break;
-            }
-        if (!run) continue;
-        unsigned int declared = 0;
         memcpy(&declared, c + kContSlotCount, 4);
-        int slotCount = (declared >= 1 && declared <= 4096) ? (int)declared
-                        : (int)(run->count - (int)((slots - run->base) / kElemStride));
-        ++good;
-
+        memcpy(&slots, c + kContSlots, 8);
+        const Run& run = runs[cd.runIdx];
+        int slotCount = (declared >= 1 && declared <= 4096) ? (int)declared : run.count;
+        std::string nm;
+        ContainerName(cont, &nm);
         AppendReport(rep, Fmt(
             "  CONTAINER at 0x%llX\r\n"
             "    name=%s  width=%d height=%d version=%d class=%u stackGroup=%u isCool=%u\r\n"
@@ -1341,9 +1414,9 @@ void RunInstanceProbe(int runNo) {
             (unsigned long long)cont, nm.empty() ? "(no name)" : nm.c_str(),
             width, height, version, cls, ssg, c[kContIsCool],
             (unsigned long long)slots, slotCount, declared,
-            run->count, (unsigned long long)run->base));
-        int shown = 0;
-        for (int k = 0; k < slotCount && shown < 40; ++k) {
+            run.count, (unsigned long long)run.base));
+        int listed = 0;
+        for (int k = 0; k < slotCount && listed < 60; ++k) {
             ElemView e;
             if (!ReadElem(slots + (size_t)k * kElemStride, &e)) break;
             if (e.empty) continue;
@@ -1351,20 +1424,78 @@ void RunInstanceProbe(int runNo) {
                 "      [%2d,%2d] %-18s %7d / %-7d  type=%u dmg=%.2f%s%s\r\n",
                 e.x, e.y, e.id, e.amount, e.maxAmount, e.type, e.damage,
                 e.installed ? " installed" : "", e.added ? " auto" : ""));
-            ++shown;
+            ++listed;
         }
         AppendReport(rep, "\r\n");
     }
 
-    std::string verdict = good ? "INVENTORY FOUND" : "RUNS BUT NO CONTAINER";
+    // Try the bases that a 0x10-byte array handle could imply, instead of one.
+    static const long kBases[] = {0x00, -0x08, -0x10, -0x18, -0x20, -0x28, -0x30};
+    AppendReport(rep,
+        "  Same candidates, every plausible base. A column of plausible width,\r\n"
+        "  height and version at one offset is the layout; all-nonsense means the\r\n"
+        "  pointer is not held by a container at all.\r\n\r\n");
+
+    int shown = 0;
+    for (const Cand& cd : cands) {
+        if (shown >= 8) break;
+        if (cd.why == 7) continue;          // it worked; its contents are above
+        ++shown;
+        AppendReport(rep, Fmt(
+            "  --- candidate %d: pointer at 0x%llX -> run %d element %d "
+            "(run has %d slots, %d occupied)\r\n",
+            shown, (unsigned long long)cd.at, cd.runIdx, cd.elemIdx,
+            runs[cd.runIdx].count, runs[cd.runIdx].nonEmpty));
+
+        for (long off : kBases) {
+            uintptr_t b = (uintptr_t)((long long)cd.at + off);
+            if (!Readable(b, kContSize)) {
+                AppendReport(rep, Fmt("      base %+5ld  unreadable\r\n", off));
+                continue;
+            }
+            unsigned char c[kContSize];
+            if (!SafeRead(b, c, kContSize)) continue;
+            int width = 0, height = 0, version = 0;
+            unsigned int cls = 0, ssg = 0;
+            memcpy(&width, c + kContWidth, 4);
+            memcpy(&height, c + kContHeight, 4);
+            memcpy(&version, c + kContVersion, 4);
+            memcpy(&cls, c + kContClass, 4);
+            memcpy(&ssg, c + kContStackGroup, 4);
+            std::string nm;
+            bool nameOk = ContainerName(b, &nm);
+            AppendReport(rep, Fmt(
+                "      base %+5ld  w=%-6d h=%-6d ver=%-8d cls=%-6u ssg=%-6u cool=%u "
+                "name=%s\r\n",
+                off, width, height, version, cls, ssg, c[kContIsCool],
+                nameOk ? (nm.empty() ? "(empty)" : nm.c_str()) : "(not a string)"));
+        }
+
+        // And the raw neighbourhood, which is what actually settles it.
+        AppendReport(rep, "      raw qwords around the pointer:\r\n");
+        for (long off = -0x40; off <= 0x40; off += 8) {
+            uintptr_t a = (uintptr_t)((long long)cd.at + off);
+            if (!Readable(a, 8)) continue;
+            uintptr_t v = 0;
+            if (!SafeRead(a, &v, 8)) continue;
+            AppendReport(rep, Fmt("        %+4ld  %016llX  %s%s\r\n", off,
+                                  (unsigned long long)v, Annotate(v).c_str(),
+                                  off == 0 ? "   <== the pointer" : ""));
+        }
+        AppendReport(rep, "\r\n");
+    }
+
+    std::string verdict = good ? "INVENTORY FOUND"
+                        : runs.empty() ? "NO INVENTORY FOUND"
+                        : "RUNS FOUND, CONTAINER LAYOUT UNCONFIRMED";
     AppendReport(rep, Fmt(
         "VERDICT: %s\r\n"
         "----------------------------------------------------------------\r\n"
         "  %llu element runs, %llu pointers to them, %d containers validated,\r\n"
-        "  %d candidates rejected as not actually containers\r\n"
+        "  %llu candidates examined against the container layout\r\n"
         "  probe took %llu ms\r\n",
         verdict.c_str(), (unsigned long long)runs.size(),
-        (unsigned long long)handles.size(), good, rejected,
+        (unsigned long long)handles.size(), good, (unsigned long long)cands.size(),
         (unsigned long long)(GetTickCount64() - t0)));
 
     WriteReportFile(outPath, rep);
