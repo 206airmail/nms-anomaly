@@ -1055,6 +1055,7 @@ constexpr size_t kInvCountB   = 0x18;
 constexpr size_t kInvGridW    = 0x00;
 constexpr size_t kInvGridH    = 0x02;
 constexpr unsigned kInvMaxSlots = 2048;
+constexpr unsigned kInvMaxGrid  = 64;     // largest real grid seen is 10x16
 constexpr size_t kOwnershipFirstContainer = 0x20;
 constexpr size_t kFreighterFirstContainer = 0x30;
 
@@ -1581,6 +1582,11 @@ int ScanForLiveInventories(uintptr_t base, size_t size, uintptr_t* out, int outM
             memcpy(&b, p + kInvCountB, 4);
             if (a != b) continue;
             ++stage[1];
+            unsigned short w, h;
+            memcpy(&w, p + kInvGridW, 2);
+            memcpy(&h, p + kInvGridH, 2);
+            if (w - 1u >= kInvMaxGrid || h - 1u >= kInvMaxGrid) continue;
+            ++stage[3];
             unsigned long long ptr;
             memcpy(&ptr, p + kInvSlotsPtr, 8);
             if (!ptr || (ptr & 7) || ptr < 0x10000ull || ptr > 0x7FFFFFFFFFFFull) continue;
@@ -1640,6 +1646,15 @@ bool InventoryIsReal(uintptr_t obj, unsigned int* slotsOut, char* firstId, int i
         int sh = SlotShape(ptr + (uintptr_t)k * kElemStride, id, sizeof(id));
         if (sh == 0) { ++InvReasons[3]; return false; }
         if (sh == 1) continue;
+        int amount = 0, maxAmount = 0, gx = 0, gy = 0;
+        uintptr_t ea = ptr + (uintptr_t)k * kElemStride;
+        SafeRead(ea + kElemAmount, &amount, 4);
+        SafeRead(ea + kElemMaxAmount, &maxAmount, 4);
+        SafeRead(ea + kElemIndexX, &gx, 4);
+        SafeRead(ea + kElemIndexY, &gy, 4);
+        if (gx < -1 || gx > 255 || gy < -1 || gy > 255) continue;
+        if (amount < -1 || amount > 100000000) continue;
+        if (maxAmount < 0 || maxAmount > 100000000) continue;
         if (!items && firstId && idCap > 0) {
             int i = 0;
             for (; i < idCap - 1 && id[i]; ++i) firstId[i] = id[i];
@@ -1694,9 +1709,10 @@ int FindLiveInventories(std::string& rep) {
     AppendReport(rep, Fmt(
         "  scanned %.1f MB (%llu regions faulted)\r\n"
         "  %u had a plausible count at +0x08, %u also matched at +0x18,\r\n"
-        "  %u also had a usable pointer at +0x10 -> %llu candidates\r\n",
+        "  %u also had a grid of 1..64 per side, %u also a usable pointer at +0x10\r\n"
+        "  -> %llu candidates\r\n",
         scanned / 1048576.0, (unsigned long long)faultedRegions,
-        stage[0], stage[1], stage[2], (unsigned long long)cand.size()));
+        stage[0], stage[1], stage[3], stage[2], (unsigned long long)cand.size()));
 
     int found = 0;
     memset(InvReasons, 0, sizeof(InvReasons));
@@ -1705,7 +1721,7 @@ int FindLiveInventories(std::string& rep) {
         char firstId[24] = {0};
         if (!InventoryIsReal(cand[i], &slots, firstId, sizeof(firstId))) continue;
         ++found;
-        if (found > 64) continue;
+        if (found > 200) continue;
         unsigned short w = 0, h = 0;
         uintptr_t ptr = 0;
         SafeRead(cand[i] + kInvGridW, &w, 2);

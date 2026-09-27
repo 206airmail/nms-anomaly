@@ -194,14 +194,22 @@ void NoteSaveWrite(HANDLE h, ULONG bytes, bool ok, DWORD err) {
 }
 
 void CloseSave(HANDLE h) {
-    bool finished = false;
+    bool finished = false, isGameSave = false;
     AcquireSRWLockExclusive(&g_saveLock);
     for (int i = 0; i < kSaveSlots; ++i)
-        if (g_saves[i].handle == h) { FinishSave(g_saves[i]); finished = true; }
+        if (g_saves[i].handle == h) {
+            // Only an actual save slot arms the probe. accountdata is written at
+            // launch and periodically, and arming on it ran the probe eight times
+            // in twenty minutes -- twice before the save had even been loaded --
+            // with every run walking 8 GB and hitching the game.
+            isGameSave = ContainsNoCase(g_saves[i].name, L"save");
+            FinishSave(g_saves[i]);
+            finished = true;
+        }
     ReleaseSRWLockExclusive(&g_saveLock);
     // Outside the lock, and only a flag: this runs on the game's thread inside a
     // file hook, so it must not scan, allocate or block.
-    if (finished) metaprobe::OnSaveWritten();
+    if (finished && isGameSave) metaprobe::OnSaveWritten();
 }
 
 // ------------------------------------------------------ debug output limit
