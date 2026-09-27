@@ -364,8 +364,9 @@ fn read_mod_file(
 ) -> Option<Props> {
     // Discovery already flattened every `.EXML`, so the usual case costs
     // nothing. A `.MBIN` has to go through MBINCompiler to be read at all.
-    if !file.props.is_empty() {
-        return Some(file.props.clone());
+    let flattened = super::propcache::props_of(file);
+    if !flattened.is_empty() {
+        return Some(flattened.into_owned());
     }
     if file.kind != Some(FileKind::Mbin) {
         return None;

@@ -82,7 +82,10 @@ pub fn refresh(root: &Path) -> std::io::Result<Arc<Scan>> {
     // Deliberately not holding the lock across the scan: it takes seconds, and
     // blocking every other command for its duration is worse than the rare
     // case of two scans starting at once and one result being dropped.
-    let (mods, stats, host) = discovery::scan_roots(&[root.to_path_buf()], true)?;
+    // Flatten everything, keep none of it. This scan outlives every command,
+    // so retaining the property maps means paying for them for the life of the
+    // process; `propcache::props_of` fetches a file's share on demand.
+    let (mods, stats, host) = discovery::scan_roots_with(&[root.to_path_buf()], true, false)?;
     let scan = Arc::new(Scan {
         mods,
         stats,

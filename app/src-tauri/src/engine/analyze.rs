@@ -70,7 +70,10 @@ impl WinnerRule {
 /// Covers shipped EXML and any compiled asset decompiled along the way, so the
 /// two are treated identically from here on.
 fn is_comparable(entry: &ModFile) -> bool {
-    entry.kind == Some(FileKind::Exml) || entry.decompiled || !entry.props.is_empty()
+    entry.kind == Some(FileKind::Exml)
+        || entry.decompiled
+        || !entry.props.is_empty()
+        || super::propcache::lookup(&entry.sha1).is_some_and(|d| !d.props.is_empty())
 }
 
 type Entry<'a> = (&'a Mod, &'a ModFile);
@@ -118,10 +121,11 @@ fn attribute(
     let comparable = entries.iter().filter(|(_, f)| is_comparable(f)).count();
 
     for (the_mod, entry) in entries {
-        if !entry.annotations.is_empty() {
+        let annotations = super::propcache::annotations_of(entry);
+        if !annotations.is_empty() {
             result.insert(
                 the_mod.name.clone(),
-                Some(entry.annotations.keys().cloned().collect()),
+                Some(annotations.keys().cloned().collect()),
             );
         } else if comparable >= 3 && is_comparable(entry) {
             let mut authored: IndexSet<String> = IndexSet::new();
@@ -169,8 +173,12 @@ fn compare_exml(entries: &[Entry<'_>]) -> Comparison {
     let mut prop_counts: IndexMap<String, usize> = IndexMap::new();
 
     for (the_mod, entry) in entries {
-        prop_counts.insert(the_mod.name.clone(), entry.props.len());
-        for (path, value) in &entry.props {
+        // Loaded per entry rather than read off the scan: the scan no longer
+        // keeps them, and this runs for ONE contested target at a time, so the
+        // peak is that target's copies instead of the whole library.
+        let props = super::propcache::props_of(entry);
+        prop_counts.insert(the_mod.name.clone(), props.len());
+        for (path, value) in props.iter() {
             values
                 .entry(path.clone())
                 .or_default()

@@ -163,8 +163,13 @@ pub fn run(
         // Only copies whose properties are readable can be judged; a mod whose
         // asset could not be decompiled must not be silently treated as making
         // no edits, which would make a real overlap look mergeable.
-        let mut copies: Vec<Copy> = Vec::new();
+        // Two passes: the properties are fetched per file (the scan does not keep
+        // them) and `Copy` borrows them, so they must outlive the copies. Getting
+        // this wrong would not corrupt anything -- an empty map marks the conflict
+        // opaque and the merge is simply not offered -- but a merge that quietly
+        // stops being offered is its own kind of wrong.
         let mut opaque = false;
+        let mut loaded: Vec<(String, std::borrow::Cow<'_, _>, bool)> = Vec::new();
         for name in &conflict.mods {
             let Some(owner) = mods.iter().find(|m| &m.name == name) else {
                 opaque = true;
@@ -175,16 +180,28 @@ pub fn run(
                 .iter()
                 .find(|f| f.target.as_deref() == Some(conflict.target.as_str()))
             {
-                Some(file) if !file.props.is_empty() => copies.push(Copy {
-                    name: name.clone(),
-                    props: &file.props,
-                    // A compiled MBIN is the whole asset; an EXML from AMUMSS
-                    // is a sparse patch naming only what it edits.
-                    whole_file: file.kind == Some(super::model::FileKind::Mbin),
-                }),
-                _ => opaque = true,
+                Some(file) => {
+                    let props = super::propcache::props_of(file);
+                    if props.is_empty() {
+                        opaque = true;
+                    } else {
+                        // A compiled MBIN is the whole asset; an EXML from AMUMSS
+                        // is a sparse patch naming only what it edits.
+                        let whole = file.kind == Some(super::model::FileKind::Mbin);
+                        loaded.push((name.clone(), props, whole));
+                    }
+                }
+                None => opaque = true,
             }
         }
+        let copies: Vec<Copy> = loaded
+            .iter()
+            .map(|(name, props, whole)| Copy {
+                name: name.clone(),
+                props,
+                whole_file: *whole,
+            })
+            .collect();
         if opaque || copies.len() < 2 {
             continue;
         }

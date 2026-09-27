@@ -282,6 +282,56 @@ pub fn parse(path: &Path, identity: &str) -> ExmlDoc {
     doc
 }
 
+/// An entry that is already cached, or `None`. Never parses, never writes.
+///
+/// The distinction from [`parse`] is the whole point. `parse` falls back to
+/// reading the file and then *stores* what it got, which is right when the
+/// caller knows the path holds XML. The lazy accessors below do not know that:
+/// a `.MBIN` that has not been decompiled yet has a hash but no flattened form,
+/// and running `exml::parse` over binary would produce an error document that
+/// `store` would then write under that hash -- poisoning the entry the eventual
+/// decompile depends on. So this reads or gives up.
+pub fn lookup(identity: &str) -> Option<ExmlDoc> {
+    if identity.is_empty() {
+        return None;
+    }
+    let file = cache_dir().join(format!("{identity}.props"));
+    std::fs::read(&file).ok().as_deref().and_then(decode)
+}
+
+/// A file's flattened properties, whether or not the scan kept them.
+///
+/// The scan that feeds the UI deliberately does not retain these: the library
+/// measured here flattens to 512,029 property entries, and holding them as
+/// `IndexMap<String, _>` with full-length keys costs hundreds of megabytes for
+/// the life of the process. They stay on disk front-coded, where they are
+/// small, and come back per file at the moment something needs them.
+///
+/// Borrowed when they are present -- tests build `ModFile`s with properties
+/// inline, and that has to keep working.
+pub fn props_of(file: &super::model::ModFile) -> std::borrow::Cow<'_, indexmap::IndexMap<String, Option<String>>> {
+    if !file.props.is_empty() {
+        return std::borrow::Cow::Borrowed(&file.props);
+    }
+    match lookup(&file.sha1) {
+        Some(doc) if !doc.props.is_empty() => std::borrow::Cow::Owned(doc.props),
+        _ => std::borrow::Cow::Borrowed(&file.props),
+    }
+}
+
+/// The AMUMSS change markers for a file, on the same terms as [`props_of`].
+pub fn annotations_of(
+    file: &super::model::ModFile,
+) -> std::borrow::Cow<'_, indexmap::IndexMap<String, String>> {
+    if !file.annotations.is_empty() {
+        return std::borrow::Cow::Borrowed(&file.annotations);
+    }
+    match lookup(&file.sha1) {
+        Some(doc) if !doc.annotations.is_empty() => std::borrow::Cow::Owned(doc.annotations),
+        _ => std::borrow::Cow::Borrowed(&file.annotations),
+    }
+}
+
 /// Keep an entry, or quietly do not. A cache that will not write is a slow
 /// run; a run that fails because its cache will not write is a broken one.
 fn store(file: &Path, bytes: &[u8]) {

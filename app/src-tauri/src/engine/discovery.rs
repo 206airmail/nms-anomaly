@@ -104,7 +104,7 @@ fn loc_ids(path: &Path) -> BTreeSet<String> {
     ids
 }
 
-fn load_file(abs_path: &Path, rel_path: &str, deep: bool) -> ModFile {
+fn load_file(abs_path: &Path, rel_path: &str, deep: bool, retain_props: bool) -> ModFile {
     let kind = classify(rel_path);
     let size = std::fs::metadata(abs_path).map(|m| m.len()).unwrap_or(0);
 
@@ -138,8 +138,14 @@ fn load_file(abs_path: &Path, rel_path: &str, deep: bool) -> ModFile {
                 // the hash above already says which file this is -- so it is
                 // done once per distinct file rather than once per scan.
                 let doc = super::propcache::parse(abs_path, &entry.sha1);
-                entry.props = doc.props;
-                entry.annotations = doc.annotations;
+                // The flattened form is kept only when the caller asked for it.
+                // Everything else here -- the template, the stamps, the parse
+                // error -- is small and always worth having, and the properties
+                // are on disk under `sha1` either way.
+                if retain_props {
+                    entry.props = doc.props;
+                    entry.annotations = doc.annotations;
+                }
                 entry.template = doc.template;
                 entry.mbinc_version = doc.mbinc_version;
                 entry.amumss_version = doc.amumss_version;
@@ -207,6 +213,12 @@ fn walk_into(dir: &Path, out: &mut Vec<PathBuf>) {
 
 /// Scan one mod folder.
 pub fn scan_mod(root: &Path, name: &str, deep: bool) -> Mod {
+    scan_mod_with(root, name, deep, true)
+}
+
+/// As [`scan_mod`], but the caller decides whether the flattened properties
+/// are kept on each file or left on disk for [`propcache::props_of`] to fetch.
+pub fn scan_mod_with(root: &Path, name: &str, deep: bool, retain_props: bool) -> Mod {
     let mut the_mod = Mod {
         name: name.to_string(),
         root: root.to_string_lossy().into_owned(),
@@ -233,7 +245,7 @@ pub fn scan_mod(root: &Path, name: &str, deep: bool) -> Mod {
             the_mod.amumss_version = Some(version);
         }
 
-        let file = load_file(abs_path, &rel_path, deep);
+        let file = load_file(abs_path, &rel_path, deep, retain_props);
 
         match file.kind {
             Some(FileKind::Lua) => {
@@ -274,6 +286,20 @@ fn has_assets(path: &Path) -> bool {
 pub fn scan_roots(
     roots: &[PathBuf],
     deep: bool,
+) -> std::io::Result<(Vec<Mod>, ScanStats, hostenv::HostInfo)> {
+    scan_roots_with(roots, deep, true)
+}
+
+/// As [`scan_roots`], but able to flatten without retaining.
+///
+/// The scan the UI keeps alive uses this: the measured library flattens to
+/// 512,029 property entries, and holding them with full-length keys cost
+/// hundreds of megabytes for the life of the process. They stay on disk, where
+/// they are front-coded and small, and come back per file when something asks.
+pub fn scan_roots_with(
+    roots: &[PathBuf],
+    deep: bool,
+    retain_props: bool,
 ) -> std::io::Result<(Vec<Mod>, ScanStats, hostenv::HostInfo)> {
     let mut mods: Vec<Mod> = Vec::new();
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
@@ -322,7 +348,7 @@ pub fn scan_roots(
             }
             seen.insert(unique.clone(), path.clone());
 
-            let mut the_mod = scan_mod(path, &unique, deep);
+            let mut the_mod = scan_mod_with(path, &unique, deep, retain_props);
             the_mod.source = host.sources.get(name).cloned();
             the_mod.archive = host.archives.get(name).cloned();
             the_mod.disabled = host.is_disabled(name);
@@ -433,6 +459,42 @@ mod tests {
         <Data template=\"GcGameplayGlobals\">\n\
         <Property name=\"GroundRunSpeed\" value=\"12\" />\n\
         </Data>\n";
+
+    /// The scan the app keeps alive flattens every file and keeps none of it.
+    /// What comes back on demand has to be byte-for-byte what was thrown away,
+    /// because every conflict in the report is computed from it.
+    ///
+    /// The existing analyse and merge tests build `ModFile`s with properties
+    /// inline, so they only ever take the borrowed branch. This is the other one.
+    #[test]
+    fn properties_left_on_disk_come_back_unchanged() {
+        let root = scratch("lean");
+        write(&root.join("Alpha").join("GLOBALS").join("A.EXML"), FRAGMENT);
+
+        let (kept, _, _) = scan_roots_with(&[root.clone()], true, true).unwrap();
+        let (lean, _, _) = scan_roots_with(&[root.clone()], true, false).unwrap();
+
+        let kept_file = &kept[0].files[0];
+        let lean_file = &lean[0].files[0];
+        assert!(!kept_file.props.is_empty(), "the retaining scan kept nothing");
+        assert!(lean_file.props.is_empty(), "the lean scan kept properties anyway");
+        assert_eq!(kept_file.sha1, lean_file.sha1);
+
+        // The point of the whole change.
+        assert_eq!(
+            *super::super::propcache::props_of(lean_file),
+            kept_file.props,
+            "properties fetched from disk differ from the ones the scan discarded"
+        );
+
+        // And the small fields stay on the file either way -- only the flattened
+        // form is left behind.
+        assert_eq!(kept_file.template, lean_file.template);
+        assert_eq!(kept_file.mbinc_version, lean_file.mbinc_version);
+        assert_eq!(kept_file.parse_error, lean_file.parse_error);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn each_subdirectory_is_one_mod() {
