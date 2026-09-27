@@ -45,6 +45,10 @@ struct Config {
     // heap rather than the image, so it gets its own budget.
     bool instProbe = false;
     int  instProbeBudgetMB = 6144;
+    // Run the instance probe the moment a save finishes writing. Nothing owns a
+    // cGcPlayerStateData member -- it is the save document root -- so that is the
+    // one moment its 27 inline inventories are certain to be materialised.
+    bool instProbeOnSave = false;
     // Settles whether the runtime holds item ids as text; see metaprobe.cpp.
     bool stringHunt = false;
     // Keep the game running when its window loses focus. Changes how the game
@@ -101,6 +105,10 @@ namespace nopause {
 namespace metaprobe {
     // Spawns the probe thread, or does nothing if Config::metaProbe is off.
     void Start();
+    // Called from the file hooks when a save has finished writing. Cheap and
+    // lock-free: it sets a flag the probe thread is already polling, because the
+    // caller is inside a hook on the game's own thread.
+    void OnSaveWritten();
 }
 
 // ---- crash handling (crash.cpp) ----

@@ -194,10 +194,14 @@ void NoteSaveWrite(HANDLE h, ULONG bytes, bool ok, DWORD err) {
 }
 
 void CloseSave(HANDLE h) {
+    bool finished = false;
     AcquireSRWLockExclusive(&g_saveLock);
     for (int i = 0; i < kSaveSlots; ++i)
-        if (g_saves[i].handle == h) FinishSave(g_saves[i]);
+        if (g_saves[i].handle == h) { FinishSave(g_saves[i]); finished = true; }
     ReleaseSRWLockExclusive(&g_saveLock);
+    // Outside the lock, and only a flag: this runs on the game's thread inside a
+    // file hook, so it must not scan, allocate or block.
+    if (finished) metaprobe::OnSaveWritten();
 }
 
 // ------------------------------------------------------ debug output limit

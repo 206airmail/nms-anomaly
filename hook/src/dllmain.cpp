@@ -37,6 +37,7 @@ void LoadConfig() {
     g_config.metaProbeScanCode = GetPrivateProfileIntW(L"hook", L"MetaProbeScanCode", 0, ini.c_str()) != 0;
     g_config.instProbe = GetPrivateProfileIntW(L"hook", L"InstProbe", 0, ini.c_str()) != 0;
     g_config.instProbeBudgetMB = (int)GetPrivateProfileIntW(L"hook", L"InstProbeBudgetMB", 6144, ini.c_str());
+    g_config.instProbeOnSave = GetPrivateProfileIntW(L"hook", L"InstProbeOnSave", 0, ini.c_str()) != 0;
     g_config.stringHunt = GetPrivateProfileIntW(L"hook", L"StringHunt", 0, ini.c_str()) != 0;
     g_config.noPauseOnFocusLoss = GetPrivateProfileIntW(L"hook", L"NoPauseOnFocusLoss", 0, ini.c_str()) != 0;
 }
@@ -65,14 +66,14 @@ void Start() {
                   "config: modFileOpens=%d fileFailures=%d allFileOpens=%d firstChance=%d "
                   "moduleLoads=%d saveWrites=%d memory=%d debugPerSec=%d "
                   "metaProbe=%d metaProbeDelay=%ds metaProbeHeap=%d metaProbeBudget=%dMB "
-                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB stringHunt=%d noPause=%d",
+                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB instProbeOnSave=%d stringHunt=%d noPause=%d",
                   g_config.logModFileOpens, g_config.logFileFailures, g_config.logAllFileOpens,
                   g_config.logFirstChanceExceptions, g_config.logModuleLoads,
                   g_config.logSaveWrites, g_config.logMemory, g_config.debugOutputPerSecond,
                   g_config.metaProbe, g_config.metaProbeDelaySeconds,
                   g_config.metaProbeScanHeap, g_config.metaProbeHeapBudgetMB,
                   g_config.metaProbeScanCode, g_config.instProbe,
-                  g_config.instProbeBudgetMB, g_config.stringHunt,
+                  g_config.instProbeBudgetMB, g_config.instProbeOnSave, g_config.stringHunt,
                   g_config.noPauseOnFocusLoss);
     hooks::Install();
     crash::Install();

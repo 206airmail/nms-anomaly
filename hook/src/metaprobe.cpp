@@ -998,6 +998,25 @@ constexpr size_t kPsdContainers     = 27;       // inline containers in the run
 constexpr size_t kPsdFirstContainer = 0x809D8;  // offset of the run within the class
 constexpr size_t kPsdRunBytes       = kPsdContainers * kContStride;
 
+// MEASURED, and it changes the target. NOTHING in the 2,741 classes owns a member
+// of type cGcPlayerStateData -- it is a root, and the save editor reaches it at the
+// JSON path BaseContext.PlayerStateData. So the 0x86A11 (551 KB) struct with 27
+// inline containers is the SAVE DOCUMENT, materialised when the game saves or
+// loads, which is why 7.6 GB of mid-game memory contained no trace of it.
+//
+// Two much smaller classes each hold three inline containers, contiguous, and
+// those are per-entity objects that should exist while playing:
+//
+//   cGcPlayerOwnershipData  0x530  Inventory @0x20, _Cargo @0x180, _TechOnly @0x2E0
+//   cGcFreighterSaveData    0x4F9  Inventory @0x30, _Cargo @0x190, _TechOnly @0x2F0
+//
+// So a run of 3 is as interesting as a run of 27, and it is the one to expect
+// mid-game. A run of 3 is weak evidence on its own, which is exactly why the
+// members must be content-validated rather than merely periodic.
+constexpr int kMinRunExtent = 3;
+constexpr size_t kOwnershipFirstContainer = 0x20;
+constexpr size_t kFreighterFirstContainer = 0x30;
+
 // In offset order, which is the order they appear in memory -- NOT declaration
 // order and not alphabetical by accident: Chest10 really does precede Chest1.
 const char* const kPsdContainerNames[kPsdContainers] = {
@@ -1361,6 +1380,51 @@ int ScanForContainerRuns(uintptr_t base, size_t size, uintptr_t* out, int outMax
     return n;
 }
 
+// Does this candidate actually hold an inventory, as opposed to merely having
+// four integer pairs that pass a bounds test?
+//
+// Run 1 of phase P found 175,187 candidates, clustered them into 134,684 runs, and
+// reported a "full run" whose members read width=447, class=1444630864 and names
+// "3JNT" and "inger2JNT" -- skeleton joint data. Periodic structure is not enough
+// on its own: in 7.6 GB there is enough of it to manufacture any period you look
+// for. The only evidence that settles it is following the Slots pointer and finding
+// an item on the other end.
+//
+// Deliberately NOT tested: Width, Height, Class, StackSizeGroup, Name. The first
+// two are documented as unreliable, and the last three are what phase 1 rejected
+// 533,288 of its 539,000 candidates on while finding nothing.
+int ContainerReasons[8];
+
+bool ContainerHoldsItems(uintptr_t a, int* firstId, char* idOut, int idCap) {
+    uintptr_t slotsPtr = 0;
+    unsigned int count = 0, cap = 0;
+    if (!SafeRead(a + kContSlots, &slotsPtr, 8)) { ++ContainerReasons[0]; return false; }
+    if (!SafeRead(a + kContSlotCount, &count, 4)) { ++ContainerReasons[0]; return false; }
+    if (!SafeRead(a + kContSlots + 0x0C, &cap, 4)) { ++ContainerReasons[0]; return false; }
+    if (!slotsPtr || count == 0) { ++ContainerReasons[1]; return false; }
+    if (count > 2048 || cap < count || cap > 8192) { ++ContainerReasons[2]; return false; }
+    if (!Readable(slotsPtr, (size_t)count * kElemStride)) { ++ContainerReasons[3]; return false; }
+    unsigned char cool = 2;
+    if (SafeRead(a + kContIsCool, &cool, 1) && cool > 1) { ++ContainerReasons[4]; return false; }
+    // One real item is enough, and it has to be a real id: NUL-padded, and with a
+    // stack size that is not absurd.
+    for (unsigned int e = 0; e < count && e < 64; ++e) {
+        ElemView ev;
+        if (!ReadElem(slotsPtr + (uintptr_t)e * kElemStride, &ev)) break;
+        if (ev.empty) continue;
+        if (ev.amount < 0 || ev.maxAmount <= 0 || ev.amount > ev.maxAmount * 4) continue;
+        if (idOut && idCap > 0) {
+            int k = 0;
+            for (; k < idCap - 1 && ev.id[k]; ++k) idOut[k] = ev.id[k];
+            idOut[k] = '\0';
+        }
+        if (firstId) *firstId = (int)e;
+        return true;
+    }
+    ++ContainerReasons[5];
+    return false;
+}
+
 // Returns the number of containers reported.
 int FindContainers(std::string& rep) {
     AppendReport(rep,
@@ -1508,10 +1572,38 @@ int FindPlayerStateData(std::string& rep) {
         return 0;
     }
 
-    // Cluster by stride. Sorted, the window for one object is 0x2520 wide, so this
-    // stays linear in practice rather than quadratic.
+    // Validate before clustering, not after. Clustering 175,187 shape-only candidates
+    // is what produced 134,684 spurious runs: at that density every address has a
+    // neighbour at every multiple of 0x160, so the period proves nothing.
     std::sort(cand.begin(), cand.end());
     cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+    size_t shapeOnly = cand.size();
+    memset(ContainerReasons, 0, sizeof(ContainerReasons));
+    std::vector<uintptr_t> real;
+    real.reserve(4096);
+    for (size_t i = 0; i < cand.size(); ++i)
+        if (ContainerHoldsItems(cand[i], nullptr, nullptr, 0)) real.push_back(cand[i]);
+    AppendReport(rep, Fmt(
+        "  content check: %llu of %llu candidates actually hold a readable item\r\n"
+        "  (a container is only believed if its Slots pointer leads to one)\r\n"
+        "    unreadable handle        %d\r\n"
+        "    empty or null Slots      %d\r\n"
+        "    count/capacity implausible %d\r\n"
+        "    slot array not readable  %d\r\n"
+        "    IsCool not 0 or 1        %d\r\n"
+        "    no slot held a valid item %d\r\n\r\n",
+        (unsigned long long)real.size(), (unsigned long long)shapeOnly,
+        ContainerReasons[0], ContainerReasons[1], ContainerReasons[2],
+        ContainerReasons[3], ContainerReasons[4], ContainerReasons[5]));
+    cand.swap(real);
+    if (cand.empty()) {
+        AppendReport(rep,
+            "  Not one candidate's Slots pointer led to an item. Combined with the\r\n"
+            "  fact that nothing owns a cGcPlayerStateData member, the likely reading\r\n"
+            "  is that these containers exist only while a save is being written or\r\n"
+            "  read. Probe on a save instead of mid-game.\r\n\r\n");
+        return 0;
+    }
 
     struct Cluster { uintptr_t lo; int members; int span; };
     std::vector<Cluster> clusters;
@@ -1519,10 +1611,10 @@ int FindPlayerStateData(std::string& rep) {
         int members = 1, span = 0;
         for (size_t j = i + 1; j < cand.size(); ++j) {
             uintptr_t d = cand[j] - cand[i];
-            if (d > kPsdRunBytes) break;
+            if (d >= kPsdRunBytes) break;   // 26 strides is the largest gap in a 27-run
             if (d % kContStride == 0) { ++members; span = (int)(d / kContStride); }
         }
-        if (members >= 2) clusters.push_back(Cluster{cand[i], members, span});
+        if (members >= kMinRunExtent) clusters.push_back(Cluster{cand[i], members, span});
     }
     std::sort(clusters.begin(), clusters.end(),
               [](const Cluster& a, const Cluster& b) { return a.members > b.members; });
@@ -1626,19 +1718,33 @@ void RunInstanceProbe(int runNo) {
     // the run of 27 inline containers is the one piece of structure in this object
     // graph that cannot be produced by coincidence.
     int psd = FindPlayerStateData(rep);
-    int direct = FindContainers(rep);
+    // Phase 1 only when phase P found nothing: it re-walks all of private memory,
+    // and running both cost 17 minutes for one answer. Its per-reason counters are
+    // still worth having when phase P comes up empty.
+    int direct = psd ? 0 : FindContainers(rep);
+    if (psd)
+        AppendReport(rep, "PHASE 1 -- skipped: phase P already identified containers.\r\n"
+                          "----------------------------------------------------------------\r\n\r\n");
 
     // A run of containers at the right stride outranks any count of separately
     // matched ones: 27 of them is cGcPlayerStateData itself, and that is the
     // difference between "an inventory exists" and "we can address all of them".
     if (psd >= 3) {
+        // Named only where a run length identifies one class. Run 1 announced
+        // "This is cGcPlayerStateData" over skeleton joint data because the claim
+        // was attached to periodicity rather than to content.
         const char* how = psd >= (int)kPsdContainers
-            ? "  The full run: the cluster spans all 27 strides. This is\r\n"
-              "  cGcPlayerStateData, and every one of its 263 members is now at a\r\n"
-              "  known offset from it.\r\n"
-            : "  A partial run -- the cluster spans fewer than 27 strides. Real, but\r\n"
-              "  either the scan budget cut it short or the containers at the ends are\r\n"
-              "  empty, which is normal and leaves the true extent unknown.\r\n";
+            ? "  27 strides of item-holding containers. That is cGcPlayerStateData,\r\n"
+              "  and all 263 of its members are now at known offsets -- but note it is\r\n"
+              "  the SAVE DOCUMENT, so it is only valid while a save is in flight.\r\n"
+            : psd == 3
+            ? "  Exactly 3 -- the shape of cGcPlayerOwnershipData (0x530) and\r\n"
+              "  cGcFreighterSaveData (0x4F9), which each hold Inventory, _Cargo and\r\n"
+              "  _TechOnly inline. Which one it is follows from the contents: the\r\n"
+              "  freighter's and the exosuit's items differ.\r\n"
+            : "  A run of a length no known class explains. Real containers -- every\r\n"
+              "  member held a readable item -- but the owning class is unidentified,\r\n"
+              "  so do not assume an offset from it.\r\n";
         AppendReport(rep, Fmt(
             "VERDICT: CONTAINER RUN FOUND (spans %d of 27 strides at 0x160)\r\n"
             "----------------------------------------------------------------\r\n"
@@ -2466,6 +2572,11 @@ void RunAll(int runNo) {
     if (g_config.stringHunt) RunStringHunt(runNo);
 }
 
+// Set from the file hooks the instant a save finishes. If cGcPlayerStateData is
+// the save document then this is the only moment it is fully materialised, so a
+// probe armed here sees what a mid-game probe cannot.
+volatile LONG g_saveArmed = 0;
+
 DWORD WINAPI ProbeThread(LPVOID) {
     // Both halves matter: our own file hooks must not observe the probe's I/O,
     // and the vectored handler in crash.cpp must not log the faults the probe
@@ -2490,6 +2601,11 @@ DWORD WINAPI ProbeThread(LPVOID) {
         if (GetFileAttributesW(sentinel.c_str()) != INVALID_FILE_ATTRIBUTES) {
             DeleteFileW(sentinel.c_str());
             RunAll(++runNo);
+        } else if (InterlockedExchange(&g_saveArmed, 0)) {
+            logger::Push(Level::Info, "metaprobe",
+                         "a save was just written -- probing now, which is when the save "
+                         "document is materialised");
+            RunAll(++runNo);
         }
         Sleep(1000);
     }
@@ -2498,6 +2614,10 @@ DWORD WINAPI ProbeThread(LPVOID) {
 } // namespace
 
 namespace metaprobe {
+
+void OnSaveWritten() {
+    if (g_config.instProbeOnSave) InterlockedExchange(&g_saveArmed, 1);
+}
 
 void Start() {
     if (!g_config.metaProbe && !g_config.instProbe && !g_config.stringHunt) return;

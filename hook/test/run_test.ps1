@@ -127,8 +127,15 @@ if ($Probe) {
     if ($itext -notmatch 'VERDICT: CONTAINER RUN FOUND \(spans 27 of 27 strides') {
         throw 'phase P did not find the full 27-stride run in its own control'
     }
-    if ($itext -notmatch 'The full run: the cluster spans all 27 strides') {
+    if ($itext -notmatch '27 strides of item-holding containers\. That is cGcPlayerStateData') {
         throw 'phase P spanned 27 strides but did not recognise the run as complete'
+    }
+    # Content validation is the correction that matters. Shape alone found 175,187
+    # candidates in the real game and clustered skeleton joint data into a "full
+    # run" -- in 7.6 GB there is enough periodic structure to manufacture any period
+    # you look for. The count is asserted so a regression to shape-only cannot pass.
+    if ($itext -notmatch 'content check: 25 of \d+ candidates actually hold a readable item') {
+        throw 'the content check did not validate exactly the 25 populated containers'
     }
     # 25, not 27: the fixture leaves two containers empty on purpose, because an
     # unowned storage chest is empty in a real save too. The number is asserted
