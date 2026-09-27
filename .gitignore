@@ -1,0 +1,52 @@
+# Anomaly -- what this repo tracks
+#
+# Only what is needed to build and distribute the app: the Tauri + Svelte app and
+# the hook DLL's source. Everything else in this working tree is generated,
+# per-user, or a research aside, and is listed below with the reason.
+#
+# Leading slashes are deliberate: an unanchored `tests/` would also swallow
+# app/tests/, which is part of the app.
+
+# ---- build output ----
+app/node_modules/
+app/build/
+app/.svelte-kit/
+app/src-tauri/target/
+app/src-tauri/gen/
+hook/bin/
+hook/obj/
+/build/
+/dist/
+
+# ---- per-user state: not the same on any two machines ----
+# Every user builds their own vanilla game cache against their own install, so
+# none of it is portable and none of it belongs in version control.
+/backups/
+/_vanilla/
+_vanilla/
+/conflicts.html
+/report.json
+*.log
+tools/nms_classes.json
+
+# ---- the Python cross-check and the research tools ----
+# The Rust engine is the product; this is the older cross-check implementation
+# plus the offline metadata extractor. Kept locally, not shipped.
+/nmscheck.py
+/nmscc/
+/tests/
+tools/*.py
+__pycache__/
+*.pyc
+
+# ---- third-party binaries and environments ----
+# Version-locked to the game and not ours to redistribute. tools/THIRD-PARTY.md
+# records what they are and under which licence, and is tracked.
+tools/venv/
+tools/*.exe
+
+# ---- editor and OS noise ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

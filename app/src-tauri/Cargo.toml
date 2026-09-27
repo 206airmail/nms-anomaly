@@ -1,0 +1,76 @@
+[package]
+name = "anomaly"
+version = "0.1.0"
+description = "No Man's Sky mod manager"
+authors = ["nsbro"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "anomaly_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }  # unstable = several webviews in one window, for the built-in browser
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Engine dependencies, kept deliberately few.
+roxmltree = "0.20"      # read-only DOM, the closest shape to ElementTree
+indexmap = "2"          # insertion-ordered maps, matching Python dict semantics
+sha1_smol = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }  # blocking, to match the engine
+tauri-plugin-dialog = "2.7.3"
+tauri-plugin-deep-link = "2.4.10"
+tauri-plugin-single-instance = { version = "2.4.5", features = ["deep-link"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+# Blocking ad requests needs WebView2's own interception API, which Tauri does
+# not surface. Versions are pinned to whatever wry already links, or two
+# incompatible COM vtables end up in one process.
+webview2-com = "0.38"
+# The session recorder needs a named pipe (the hook inside the game talks down
+# it), the process itself (is the game up, and how did it exit), and the time
+# zone (a session log is read against the reader's own clock).
+windows = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Pipes",
+  "Win32_System_IO",
+  "Win32_Security",
+  "Win32_System_Threading",
+  "Win32_System_Time",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_Storage_FileSystem",
+] }
+
+
+# `tauri dev` builds this crate unoptimized, and the engine is not a thin
+# wrapper around a webview: one start-up reads and parses ~180 MB of decompiled
+# XML before it can say anything. At opt-level 0 that took 76 seconds against a
+# 62-mod library and 18 with optimisation on -- so the dev build carries enough
+# optimisation to stay usable, and the dependencies, which are never the thing
+# being debugged, carry all of it. Incremental rebuilds are barely affected
+# because only this crate is recompiled and it is small.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

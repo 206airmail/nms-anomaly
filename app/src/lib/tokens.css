@@ -1,0 +1,358 @@
+/* Anomaly design system - instrument panel, lit from somewhere.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. THE COLOUR CONTRACT  (unchanged, and the reason the screen means anything)
+ * ---------------------------------------------------------------------------
+ *
+ *   --cyan    structure. Panel headers, field labels, section titles, borders.
+ *             Never on a control the user can press.
+ *   --accent  you can do this. Buttons that perform an action, and the active
+ *             nav item. Never decoration.
+ *   --signal  amber. ONE job: the value the game will actually load.
+ *   --contest red. Two claims collide.
+ *
+ * Monospace is for characters that must align - values, paths, counts.
+ * Uppercase micro-labels are for panel and field headers, never for content.
+ *
+ * ---------------------------------------------------------------------------
+ * 2. DEPTH  (after SimVizion-IC, which Nick likes and which this now follows)
+ * ---------------------------------------------------------------------------
+ *
+ * Glass over a lit void, with definite edges. Four rules:
+ *
+ *   - A surface is *translucent dark glass*, not a lighter opaque grey. The
+ *     page's own glow shows through it, which is what makes a panel read as
+ *     a pane of something rather than a filled rectangle.
+ *   - Edges are visible. A steel-cyan hairline at ~32% draws every surface.
+ *     This is the one place this system departs from fashionable near-invisible
+ *     borders: an instrument should look assembled from parts, and you cannot
+ *     see the parts if the seams are at 6%.
+ *   - One shadow, wide and soft: `--cast`. Depth comes from the glass and the
+ *     edge; the shadow only lifts the whole thing off the page.
+ *   - 8px is the radius for nearly everything. Only the outermost containers
+ *     go larger. Consistency here is most of what makes it look built.
+ *
+ * ---------------------------------------------------------------------------
+ * 3. MOTION
+ * ---------------------------------------------------------------------------
+ *
+ * This is a desktop tool, not a page. Interactions resolve immediately and
+ * decisively: 140-240ms, expo-out, movements of 1-3px. Nothing bounces,
+ * nothing overshoots, nothing slides in from off-screen. If an animation is
+ * noticeable as an animation, it is wrong.
+ */
+
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/Archivo-400_700.woff2") format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/IBMPlexMono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/IBMPlexMono-500.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+
+:root {
+  /* --- ground ------------------------------------------------------------ */
+  /* Near-black, tinted green-cyan rather than neutral. The tint is what stops
+     it reading as "default dark theme". Never #000: it flattens everything
+     stacked on top of it. */
+  --abyss: #030707; /* below everything: the window's own backdrop */
+  --void: #04090a; /* the page. The only opaque surface here. */
+
+  /* The four surface names the app already uses everywhere, pointed at the
+     glass values. Redefining them here is what moves the whole program onto
+     this system at once, instead of a thousand edits. */
+  --hull: var(--glass); /* a panel on the void */
+  --card: var(--glass-2); /* a card inside a panel */
+  --card-hi: var(--glass-hi); /* the same card, hovered */
+  --inset: var(--glass-well); /* a well: inputs, code, metrics */
+
+  /* --- glass ------------------------------------------------------------- */
+  /* Translucent, so the page's glow comes through. Stacking these reads as
+     stacking panes; stacking opaque greys reads as a palette. */
+  --glass: rgba(9, 22, 25, 0.86); /* a panel */
+  --glass-2: rgba(13, 30, 34, 0.9); /* a card on a panel, and controls */
+  --glass-hi: rgba(18, 40, 44, 0.94); /* the same, hovered */
+  --glass-well: rgba(4, 12, 14, 0.9); /* a well: inputs, code, metrics */
+
+  --film: rgba(255, 255, 255, 0.035);
+  --film-hi: rgba(255, 255, 255, 0.06);
+
+  /* --- borders ----------------------------------------------------------- */
+  /* Steel-cyan and actually visible: the seams between parts. */
+  --rule: rgba(105, 146, 154, 0.34);
+  --rule-hi: rgba(120, 165, 172, 0.5);
+  --rule-soft: rgba(0, 240, 245, 0.16);
+  --lip: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* --- ink --------------------------------------------------------------- */
+  --readout: #f1fbfa;
+  --dim: #a2b8be;
+  --faint: #6f8b8e;
+  --ghost: #47605f; /* disabled, placeholder, the absent value */
+
+  --cyan: #35d6c8;
+  --cyan-dim: #4e9a95;
+  --cyan-wash: rgba(53, 214, 200, 0.1);
+
+  --accent: #8ae03c;
+  --accent-ink: #061104; /* text on a filled accent button */
+  --accent-wash: rgba(138, 224, 60, 0.12);
+  --accent-glow: 0 0 18px rgba(138, 224, 60, 0.28);
+
+  --signal: #f5a623;
+  --signal-wash: rgba(245, 166, 35, 0.14);
+  --contest: #ff5f56;
+  --contest-ink: #2a0705;
+  --contest-wash: rgba(255, 95, 86, 0.14);
+  --settled: var(--cyan);
+  --settled-wash: var(--cyan-wash);
+
+  /* --- type -------------------------------------------------------------- */
+  --font-ui: "Archivo", system-ui, sans-serif;
+  --font-value: "IBM Plex Mono", ui-monospace, monospace;
+
+  --t-micro: 0.75rem;
+  --t-small: 0.8125rem;
+  --t-body: 0.875rem;
+  --t-lead: 1rem;
+  --t-title: 1.25rem;
+  --t-head: 1.5rem;
+  --t-verdict: 2rem;
+
+  /* Headings tighten as they grow, or large text reads as loose and cheap. */
+  --track-tight: -0.011em;
+  --track-tighter: -0.022em;
+  --track-label: 0.14em;
+
+  /* --- geometry ---------------------------------------------------------- */
+  /* 8px is the workhorse. Only the outermost containers go larger, and
+     nothing goes smaller except pills. */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  /* Controls are desktop-sized. A 28px button belongs on a web page. */
+  --control-h: 2.125rem;
+
+  /* --- elevation --------------------------------------------------------- */
+  /* One wide, soft cast. The edge and the glass do the describing. */
+  --cast: 0 18px 56px -22px rgba(0, 0, 0, 0.72);
+  --cast-near: 0 6px 18px -10px rgba(0, 0, 0, 0.6);
+  --elev-1: var(--cast-near);
+  --elev-2: var(--cast);
+  --elev-3: 0 28px 80px -26px rgba(0, 0, 0, 0.85);
+  /* kept: older rules still name these */
+  --shadow-sm: var(--cast-near);
+  --shadow-md: var(--cast);
+
+  /* A control that emits light rather than just sitting there. */
+  --lift-accent:
+    0 0 22px -4px rgba(138, 224, 60, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  --lift-cyan: 0 0 24px -6px rgba(53, 214, 200, 0.42);
+
+  /* --- motion ------------------------------------------------------------ */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1); /* expo-out: fast, then settles */
+  --quick: 140ms;
+  --calm: 240ms;
+
+  /* --- layout ------------------------------------------------------------ */
+  --nav-w: 14rem;
+  --pad: 1.25rem;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  color: var(--readout);
+  font-family: var(--font-ui);
+  font-size: var(--t-body);
+  line-height: 1.55;
+  letter-spacing: var(--track-tight);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden; /* the panes scroll, the window does not */
+
+  /* Two faint blooms so the black has somewhere to come from. */
+  background:
+    radial-gradient(
+      900px 420px at 18% -180px,
+      rgba(53, 214, 200, 0.09),
+      transparent 70%
+    ),
+    radial-gradient(
+      760px 380px at 88% -140px,
+      rgba(138, 224, 60, 0.05),
+      transparent 70%
+    ),
+    var(--void);
+}
+
+/* The atmosphere: a 64px grid, faded out before it reaches the bottom of the
+   window so it reads as depth rather than as wallpaper.
+
+   There was a fine white speckle here as well, for tooth and to stop the
+   gradients banding. It was removed: at any opacity high enough to do that
+   job it was visible as dots, and dots on the background of a tool are just
+   dirt on the lens. The gradients are gentle enough not to band without it. */
+/* Both atmosphere layers sit at z-index -1: above the page's own background,
+   below everything the app draws. They cannot use a positive z-index -- the
+   app is mounted inside a `display: contents` wrapper, so it generates no box
+   to stack against, and a pseudo-element of <body> declared after it would
+   paint straight over the interface. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(53, 214, 200, 0.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(53, 214, 200, 0.028) 1px, transparent 1px);
+  background-size:
+    64px 64px,
+    64px 64px;
+  opacity: 0.55;
+  mask-image: radial-gradient(150% 120% at 50% 0%, #000 20%, transparent 78%);
+}
+
+/* One slow pool of light. It moves far enough that a static screenshot and the
+   screen a minute later are not the same picture, and slowly enough that it is
+   never something the eye follows while reading. */
+body::after {
+  content: "";
+  position: fixed;
+  z-index: -1;
+  pointer-events: none;
+  left: 50%;
+  top: -30vh;
+  width: 120vw;
+  height: 90vh;
+  margin-left: -60vw;
+  background:
+    radial-gradient(
+      closest-side,
+      rgba(53, 214, 200, 0.055),
+      transparent 70%
+    ),
+    radial-gradient(
+      closest-side at 72% 60%,
+      rgba(138, 224, 60, 0.035),
+      transparent 70%
+    );
+  filter: blur(40px);
+  animation: drift 26s var(--ease) infinite;
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-3%, 2.5vh, 0) scale(1.06);
+  }
+}
+
+/* Values and paths: tabular figures so 40.000000 and 100.000000 line up. */
+.value,
+.path {
+  font-family: var(--font-value);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0;
+}
+
+/* The uppercase micro-label above a panel or a field. Structural only. */
+.hud-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+  color: var(--cyan-dim);
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: var(--track-tighter);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  letter-spacing: inherit;
+}
+
+/* Checkboxes are a control the user presses, so they answer to the action
+   colour. The browser default is a blue that belongs to no part of this. */
+input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 0.95rem;
+  height: 0.95rem;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+::selection {
+  background: rgba(53, 214, 200, 0.3);
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(53, 214, 200, 0.16);
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--r-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(53, 214, 200, 0.3);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

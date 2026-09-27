@@ -1,0 +1,277 @@
+/* The shapes every pane is built from.
+ *
+ * ---------------------------------------------------------------------------
+ * Why this file exists
+ * ---------------------------------------------------------------------------
+ *
+ * Because it did not, and the cost showed. Before this file, `.failed` was
+ * defined in seven components, `.quiet` and `.pane` in six, `.go` and `.tag`
+ * in five, `.spin` with its own `@keyframes` in three, and the delete sheet
+ * and the preset sheet were two hand-built copies of one dialog.
+ *
+ * That is not merely repetitive, it had already drifted: the primary button on
+ * the Presets tab had lost its border and its glow and gained a font weight,
+ * so the most important control on one tab did not look like the same control
+ * anywhere else. Seven copies of a rule is seven chances for one of them to be
+ * a different colour, and nobody notices which.
+ *
+ * ---------------------------------------------------------------------------
+ * What belongs here, and what does not
+ * ---------------------------------------------------------------------------
+ *
+ * A class earns a place here when it means the *same thing* in every component
+ * that uses it, and when its name is distinctive enough to be safe as a global.
+ *
+ * That second condition is not theoretical. A global `.label` was added once
+ * and it collided with DriftDetail's own scoped `.label` -- the coordinate
+ * captions -- and uppercased them. Component-scoped Svelte styles do not
+ * protect against a global class of the same name: both rules match, and the
+ * global's properties simply arrive. So `.note`, `.row`, `.tag`, `.label` and
+ * `.value` stay component-local, because they mean different things in
+ * different places, and the names here are ones nothing else wants.
+ *
+ * ---------------------------------------------------------------------------
+ * The button vocabulary
+ * ---------------------------------------------------------------------------
+ *
+ * There were fifteen class names for four roles: go, combine, scan, find,
+ * play, add, open / see, more, link, quiet, quiet-btn / danger, danger-btn,
+ * reallydanger. There are now four, and `Button.svelte` is the way to reach
+ * them. The raw classes are for buttons living inside a bigger layout -- the
+ * nav, the batch bar -- where a component wrapper would fight the grid.
+ *
+ *   .btn            the shape: size, radius, the press
+ *   .btn-primary    performs the action. Accent. One per view, ideally.
+ *   .btn-ghost      the alternative, and every secondary verb
+ *   .btn-danger     destroys something
+ *   .btn-link       a verb inside a sentence, not a control
+ */
+
+/* ---- surfaces ----------------------------------------------------------- */
+
+/* A scrolling column of content. The 4rem foot is so the last panel is not
+   flush against the status bar, which reads as clipped. */
+.pane {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--pad) var(--pad) 4rem;
+}
+
+/* A panel is a translucent film over the page, not a lighter grey box, so
+   stacking reads as height. The top-edge highlight is the light catching its
+   lip -- it separates a panel from the one behind it far more cheaply than a
+   stronger border would. */
+.panel {
+  position: relative;
+  margin-bottom: 0.75rem;
+  padding: 1rem 1.125rem 1.125rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-md);
+  background: var(--glass);
+  box-shadow: var(--cast), var(--lip);
+}
+
+.panel > header {
+  display: block;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* ---- prose -------------------------------------------------------------- */
+
+/* The sentence under a heading: what this screen is, or what a choice costs.
+   Was variously .supporting, .lede, .why, .detail and .blurb. */
+.lede {
+  margin: 0.3125rem 0 0;
+  color: var(--dim);
+  font-size: var(--t-small);
+}
+
+/* Smaller and quieter: a caption, an aside, a count. Was .hint, .quiet,
+   .context and .note in the places those meant this. */
+.hint {
+  margin: 0.25rem 0 0;
+  color: var(--faint);
+  font-size: var(--t-micro);
+}
+
+/* ---- outcomes ----------------------------------------------------------- */
+
+/* Something went wrong and the text is the reason. Always the engine's own
+   words: a message a user can search for beats one we paraphrased. */
+.failed {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--contest-wash);
+  border-left: 2px solid var(--contest);
+  border-radius: var(--r-sm);
+  background: rgba(255, 95, 86, 0.07);
+  color: var(--readout);
+  font-size: var(--t-small);
+}
+
+/* Nothing is broken, but read this before pressing the next thing. */
+.warn {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-left: 2px solid var(--signal);
+  border-radius: var(--r-sm);
+  background: var(--signal-wash);
+  color: var(--readout);
+  font-size: var(--t-small);
+}
+
+/* It worked. Deliberately as quiet as the other two are loud: a confirmation
+   should be findable, not congratulatory. */
+.ok {
+  margin: 0.5rem 0 0;
+  color: var(--accent);
+  font-size: var(--t-small);
+}
+
+/* ---- badges ------------------------------------------------------------- */
+
+.badge {
+  padding: 0.1rem 0.4rem;
+  border-radius: var(--r-pill);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.badge-quiet {
+  color: var(--faint);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.badge-info {
+  color: var(--cyan);
+  background: var(--cyan-wash);
+}
+
+.badge-signal {
+  color: var(--signal);
+  background: var(--signal-wash);
+}
+
+.badge-alert {
+  color: var(--contest);
+  background: var(--contest-wash);
+}
+
+/* ---- buttons ------------------------------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4375rem;
+  min-height: var(--control-h);
+  padding: 0.4375rem 0.875rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  background: var(--glass-2);
+  color: var(--dim);
+  font-size: var(--t-small);
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background var(--quick) var(--ease),
+    border-color var(--quick) var(--ease),
+    box-shadow var(--quick) var(--ease),
+    color var(--quick) var(--ease),
+    transform var(--quick) var(--ease);
+}
+
+/* Pressing moves the control, not the page. 2% is the whole gesture. */
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+  box-shadow: none;
+  transform: none;
+}
+
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--accent-glow);
+}
+
+.btn-primary:hover:not(:disabled) {
+  box-shadow: var(--lift-accent);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--rule-hi);
+  background: var(--glass-hi);
+  color: var(--readout);
+}
+
+.btn-danger {
+  border-color: var(--contest-wash);
+  color: var(--contest);
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: rgba(255, 95, 86, 0.35);
+  background: var(--contest-wash);
+  color: var(--contest);
+}
+
+/* A verb inside a sentence. Not a box: a box in running text reads as a
+   control that escaped its toolbar. */
+.btn-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cyan);
+  font-size: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(53, 214, 200, 0.4);
+  text-underline-offset: 2px;
+}
+
+.btn-link:hover:not(:disabled) {
+  text-decoration-color: var(--cyan);
+}
+
+/* A row of buttons: the primary verb first, the way out after it. */
+.verbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.875rem;
+}
+
+/* ---- working ------------------------------------------------------------ */
+
+/* One definition, where there were three. A ring rather than a dot ring:
+   at 0.7rem a segmented spinner is mush. */
+.spin {
+  flex: none;
+  width: 0.7rem;
+  height: 0.7rem;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 620ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

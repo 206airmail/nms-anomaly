@@ -1,0 +1,201 @@
+{
+  "actionable_count": 2,
+  "broken": [],
+  "conflicts": [
+    {
+      "benign": false,
+      "clashes": [
+        {
+          "attributed": [],
+          "path": "JetpackDrainRate",
+          "values": {
+            "Endless Jetpack": "0.000000",
+            "Faster Jetpack": "0.250000",
+            "Survival Rebalance": "1.500000"
+          }
+        }
+      ],
+      "declared_only": [],
+      "edit_counts": {},
+      "kind": "field-disagreement",
+      "mergeable": null,
+      "mods": [
+        "Endless Jetpack",
+        "Faster Jetpack",
+        "Survival Rebalance"
+      ],
+      "notes": [
+        "properties defined per copy: Endless Jetpack 1, Faster Jetpack 2, Survival Rebalance 2",
+        "The game applies these patches natively and merges edits that do not overlap; where they do overlap, mod order decides the value."
+      ],
+      "overlap": [],
+      "predicted_winner": "Survival Rebalance",
+      "severity": "CRITICAL",
+      "summary": "1 shared propert(y/ies) set to different values",
+      "target": "GLOBALS/GCPLAYERGLOBALS.GLOBAL.MBIN",
+      "unique_counts": {
+        "Faster Jetpack": 1,
+        "Survival Rebalance": 1
+      }
+    },
+    {
+      "benign": false,
+      "clashes": [
+        {
+          "attributed": [
+            "Richer Scrap"
+          ],
+          "path": "Table[R_SCRAPHEAP]/PercentageChance",
+          "values": {
+            "Richer Scrap": "100.000000",
+            "Salvage Overhaul": "40.000000"
+          }
+        }
+      ],
+      "declared_only": [],
+      "edit_counts": {},
+      "kind": "field-disagreement",
+      "mergeable": null,
+      "mods": [
+        "Richer Scrap",
+        "Salvage Overhaul"
+      ],
+      "notes": [
+        "No change markers and too few copies to infer a vanilla baseline, so which mod authored each difference cannot be determined.",
+        "properties defined per copy: Richer Scrap 2, Salvage Overhaul 2",
+        "The game applies these patches natively and merges edits that do not overlap; where they do overlap, mod order decides the value."
+      ],
+      "overlap": [],
+      "predicted_winner": "Salvage Overhaul",
+      "severity": "CRITICAL",
+      "summary": "1 shared propert(y/ies) set to different values",
+      "target": "METADATA/REALITY/TABLES/REWARDTABLE.MBIN",
+      "unique_counts": {}
+    }
+  ],
+  "disable_all": false,
+  "disabled": [],
+  "drift": [],
+  "loc_clashes": [],
+  "manager": null,
+  "merged_count": 0,
+  "mods": [
+    {
+      "amumss_version": null,
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Endless Jetpack",
+      "priority": 1,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Endless Jetpack",
+      "source": null,
+      "targets": [
+        "GLOBALS/GCPLAYERGLOBALS.GLOBAL.MBIN"
+      ]
+    },
+    {
+      "amumss_version": null,
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Faster Jetpack",
+      "priority": 0,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Faster Jetpack",
+      "source": null,
+      "targets": [
+        "GLOBALS/GCPLAYERGLOBALS.GLOBAL.MBIN"
+      ]
+    },
+    {
+      "amumss_version": null,
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Quiet Skies",
+      "priority": 5,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Quiet Skies",
+      "source": null,
+      "targets": [
+        "GLOBALS/GCGALAXYGLOBALS.GLOBAL.MBIN"
+      ]
+    },
+    {
+      "amumss_version": "5.6.5.0w",
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Richer Scrap",
+      "priority": 3,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Richer Scrap",
+      "source": null,
+      "targets": [
+        "METADATA/REALITY/TABLES/REWARDTABLE.MBIN"
+      ]
+    },
+    {
+      "amumss_version": null,
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Salvage Overhaul",
+      "priority": 4,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Salvage Overhaul",
+      "source": null,
+      "targets": [
+        "METADATA/REALITY/TABLES/REWARDTABLE.MBIN"
+      ]
+    },
+    {
+      "amumss_version": null,
+      "declared_targets": [],
+      "disabled": false,
+      "files": 1,
+      "max_version": "7.03.0.1",
+      "min_version": "7.03.0.1",
+      "name": "Survival Rebalance",
+      "priority": 2,
+      "root": "C:\\Users\\nsbro\\AppData\\Local\\Temp\\nmscheck-demo-oyj83iqz\\GAMEDATA\\MODS\\Survival Rebalance",
+      "source": null,
+      "targets": [
+        "GLOBALS/GCPLAYERGLOBALS.GLOBAL.MBIN"
+      ]
+    }
+  ],
+  "real_load_order": true,
+  "reference_version": "7.03.0.1",
+  "roots": [
+    "(sample data) \\No Man's Sky\\GAMEDATA\\MODS"
+  ],
+  "stale": [],
+  "stats": {
+    "assets": 6,
+    "dds": 0,
+    "decompiled": 0,
+    "error_details": [],
+    "exml": 6,
+    "files": 6,
+    "lua": 0,
+    "mbin": 0,
+    "mods": 6,
+    "parse_errors": 0,
+    "targets": 3
+  },
+  "tools": {
+    "hgpaktool": null,
+    "mbincompiler": null,
+    "scene_check": false,
+    "scene_check_note": "skipped with --no-drift"
+  },
+  "unregistered": [],
+  "winner_rule": "last"
+}
