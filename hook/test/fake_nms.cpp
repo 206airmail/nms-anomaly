@@ -337,8 +337,12 @@ static void PublishFakeLiveInventories() {
         {suit,  7, 10, 12, 30, 10, 15,  0},
         {ship,  2, 10,  5, 40,  5, 12,  1},
         {chest, 2, 10,  6, 50,  4,  9,  2},
-        {spare, 1,  3,  3,  4,  2,  6,  5},   // a gap at 3 and 4: members missing
+        {spare, 1,  3,  3,  4,  2,  6,  5},   // a gap at 4: member missing
         {spare, 1,  7,  5, 12,  1,  4, -1},   // off the lattice entirely
+        // Owned but never filled: cap 0 means no element array at all, so the
+        // discovery gate (capacity in 1..2048) cannot see it and the lattice walk
+        // is the ONLY thing that reports it. Index 3, between two populated ones.
+        {spare, 0, 10,  6,  7,  0,  0,  3},
     };
     const int kBuilds = (int)(sizeof(builds) / sizeof(builds[0]));
 
@@ -358,8 +362,11 @@ static void PublishFakeLiveInventories() {
         size_t at = bd.lattice >= 0 ? kLattice + (size_t)bd.lattice * kStride : kOffLat;
         unsigned char* obj = pool + at;
 
-        unsigned char* arr = (unsigned char*)calloc((size_t)bd.cap, 0x30);
-        if (!arr) return;
+        unsigned char* arr = 0;
+        if (bd.cap > 0) {
+            arr = (unsigned char*)calloc((size_t)bd.cap, 0x30);
+            if (!arr) return;
+        }
         for (int k = 0; k < bd.n; ++k) {
             unsigned char* e = arr + (size_t)k * 0x30;
             const Seed& sd = bd.seeds[k];
@@ -420,9 +427,10 @@ static void PublishFakeLiveInventories() {
             memcpy(obj + 0x18, &bcount, 4);
         }
     }
-    char msg[160];
-    sprintf_s(msg, "fake live inventories: %d valid (4 on a 0x%zX lattice) + 1 malformed,"
-                   " pool at %p\n", kBuilds, kStride, (void*)pool);
+    char msg[200];
+    sprintf_s(msg, "fake live inventories: %d stores (%d findable, 1 owned-but-empty)"
+                   " on a 0x%zX lattice + 1 malformed, pool at %p\n",
+              kBuilds, kBuilds - 1, kStride, (void*)pool);
     OutputDebugStringA(msg);
 }
 // ---------------------------------------------------------------------------

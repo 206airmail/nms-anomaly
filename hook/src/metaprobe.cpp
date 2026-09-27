@@ -1786,6 +1786,125 @@ bool InventoryIsReal(uintptr_t obj, LiveInv* info, char* firstId, int idCap) {
     return true;
 }
 
+// Read every slot of the array by POSITION, empty ones included.
+//
+// Discovery cannot be loosened to include empty stores: dropping the "at least one
+// item" rule once gave 1,664 results whose first 64 were all id string tables
+// (FOS_HEAD_*, grid 61392x29565). But once the lattice is known, the empty members
+// do not need to be *searched* for -- they can be read at base + k*stride, and
+// indexing has no false positives to guard against. That is why this is a second
+// pass over a known stride rather than a weaker filter on the first.
+//
+// This is what produces the index -> inventory map. The map is worth having because
+// the internal offsets are stable across process restarts (measured twice: exosuit
+// to first exocraft is 0x5B50 in two different processes), so it only has to be
+// built once.
+void WalkLattice(std::string& rep, uintptr_t anchor, uintptr_t stride) {
+    AppendReport(rep, Fmt(
+        "\r\n  LATTICE WALK -- every slot at stride 0x%llX from 0x%llX, empty ones\r\n"
+        "  included. Index is what names an inventory; match the populated ones to\r\n"
+        "  the save by contents and the empty ones come free.\r\n\r\n"
+        "  %6s  %-14s %-7s %6s %5s  %-11s  contents\r\n",
+        (unsigned long long)stride, (unsigned long long)anchor,
+        "index", "address", "grid", "miCap", "mask", "size/alloc"));
+
+    // Walk down until the memory stops being readable, then up the same way. A few
+    // unreadable slots in a row is the end of the object, not a gap. Rows are
+    // collected rather than printed as they are found, because walking outwards
+    // from the anchor produces them in the order -1,-2,-3,0,1,2 and an index map is
+    // only useful in index order.
+    const int kMaxMiss = 2, kMaxEach = 80, kMaxBlank = 24;
+    std::vector<std::pair<long, std::string> > rows;
+    for (int dir = -1; dir <= 1; dir += 2) {
+        int miss = 0, blank = 0;
+        for (int step = (dir < 0 ? 1 : 0); step < kMaxEach; ++step) {
+            long idx = (long)dir * step;
+            uintptr_t addr = (uintptr_t)((long long)anchor + (long long)idx * (long long)stride);
+            if (addr < 0x10000ull || !Readable(addr, 0x40)) {
+                if (++miss > kMaxMiss) break;
+                continue;
+            }
+            miss = 0;
+
+            unsigned short w = 0, h = 0;
+            short micap = 0;
+            unsigned int cap = 0, size = 0;
+            uintptr_t ptr = 0;
+            SafeRead(addr + kInvGridW, &w, 2);
+            SafeRead(addr + kInvGridH, &h, 2);
+            SafeRead(addr + kInvCapacity, &micap, 2);
+            SafeRead(addr + kInvStoreCap, &cap, 4);
+            SafeRead(addr + kInvStoreSize, &size, 4);
+            SafeRead(addr + kInvSlotsPtr, &ptr, 8);
+
+            // Nothing here rejects: an unowned chest is a legitimate store with a
+            // zero grid and no elements, and that is exactly what we came for.
+            int pop = -1, maskHigh = 0;
+            if (addr > kInvMaskBack && Readable(addr - kInvMaskBack, kInvMaskWords * 8)) {
+                pop = 0;
+                for (unsigned int k = 0; k < kInvMaskWords; ++k) {
+                    unsigned long long word = 0;
+                    if (!SafeRead(addr - kInvMaskBack + (uintptr_t)k * 8, &word, 8)) { pop = -1; break; }
+                    if (word >> 16) maskHigh = 1;
+                    pop += PopCount64(word);
+                }
+            }
+
+            // Where the array ENDS. Walking a fixed distance in both directions
+            // produced 160 rows, most of them arbitrary heap labelled "(empty)" --
+            // because random memory nearly always has some mask bit set. A real
+            // store has a small grid, a sane capacity, size <= capacity, and a mask
+            // confined to the low 16 bits of each word; junk fails at least one,
+            // usually the mask. Two failures in a row is the end of the array.
+            bool plausible = w <= kInvMaxGrid && h <= kInvMaxGrid &&
+                             cap <= kInvMaxSlots && size <= cap && !maskHigh;
+            if (!plausible) {
+                if (++miss > kMaxMiss) break;
+                continue;
+            }
+            miss = 0;
+
+            // An entirely blank slot is skipped but does NOT stop the walk. The
+            // ship array has twelve slots and Nick owns three, so a long blank run
+            // sits between arrays that both matter -- stopping at the first would
+            // hide everything after it. An unowned chest is not blank, by the way:
+            // it still carries its grid and its 50-bit mask.
+            if (w == 0 && h == 0 && cap == 0 && size == 0 && pop <= 0) {
+                if (++blank > kMaxBlank) break;
+                continue;
+            }
+            blank = 0;
+
+            std::string ids;
+            int shown = 0;
+            if (size >= 1 && size <= kInvMaxSlots &&
+                Readable(ptr, (size_t)size * kElemStride)) {
+                for (unsigned int k = 0; k < size; ++k) {
+                    char id[24] = {0};
+                    if (SlotShape(ptr + (uintptr_t)k * kElemStride, id, sizeof(id)) != 2) continue;
+                    int amount = 0;
+                    SafeRead(ptr + (uintptr_t)k * kElemStride + kElemAmount, &amount, 4);
+                    if (shown) ids += ", ";
+                    ids += Fmt("%s x%d", id, amount);
+                    ++shown;
+                }
+            }
+            if (!shown) ids = (cap || pop > 0) ? "(empty)" : "(unused slot)";
+
+            rows.push_back(std::make_pair(idx, Fmt(
+                "  %6ld  0x%012llX %-7s %6d %5d  %-11s  %s\r\n",
+                idx, (unsigned long long)addr, Fmt("%ux%u", w, h).c_str(),
+                (int)micap, pop, Fmt("%u/%u", size, cap).c_str(), ids.c_str())));
+        }
+    }
+    std::sort(rows.begin(), rows.end());
+    for (size_t i = 0; i < rows.size(); ++i) AppendReport(rep, rows[i].second);
+    AppendReport(rep, Fmt("\r\n    %llu slots walked. An index with a grid and a mask\r\n"
+                          "    but no contents is an inventory the player owns and has\r\n"
+                          "    not filled; one with neither is past the end of the array.\r\n",
+                          (unsigned long long)rows.size()));
+}
+
 // Do the validated stores lie on a lattice?
 //
 // ReNMS reconstructs the runtime cGcPlayerState with its inventories INLINE in
@@ -1847,6 +1966,8 @@ void ReportFixedArrays(std::string& rep, std::vector<uintptr_t> hits) {
     // For the best few gaps, how many stores sit on that lattice from some anchor?
     // A stride that is really sizeof(cGcInventoryStore) should collect a whole
     // fixed array; a coincidental gap collects two or three.
+    uintptr_t winStride = 0, winAnchor = 0;
+    size_t winCount = 0;
     for (size_t g = 0; g < byCount.size() && g < 3; ++g) {
         uintptr_t stride = byCount[g].second;
         size_t best = 0, bestAt = 0;
@@ -1863,10 +1984,19 @@ void ReportFixedArrays(std::string& rep, std::vector<uintptr_t> hits) {
             "    stride 0x%llX: best lattice holds %llu stores from 0x%llX\r\n",
             (unsigned long long)stride, (unsigned long long)best,
             (unsigned long long)hits[bestAt]));
+        // Ties go to the SMALLER stride. A multiple of the true stride collects the
+        // same members on a coarser grid and would otherwise win on equal count
+        // while skipping every other slot of the array.
+        if (best > winCount || (best == winCount && stride < winStride)) {
+            winCount = best;
+            winStride = stride;
+            winAnchor = hits[bestAt];
+        }
     }
     AppendReport(rep,
         "    A stride that collects 28, 12 or 7 stores is sizeof(cGcInventoryStore)\r\n"
         "    and names them by index. One that collects 2 or 3 is a coincidence.\r\n");
+    if (winCount >= 3) WalkLattice(rep, winAnchor, winStride);
 }
 
 // Live inventories, by the layout measured against the running game.
@@ -1953,7 +2083,7 @@ int FindLiveInventories(std::string& rep) {
             v.maskHighBits ? " (bits above 15 set -- prediction broken)" : "",
             v.tailMalformed, v.tailTotal));
         int shown = 0;
-        for (unsigned int k = 0; k < slots && shown < 10; ++k) {
+        for (unsigned int k = 0; k < slots; ++k) {
             uintptr_t ea = ptr + (uintptr_t)k * kElemStride;
             char id[24] = {0};
             if (SlotShape(ea, id, sizeof(id)) != 2) continue;

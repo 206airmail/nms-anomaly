@@ -146,6 +146,24 @@ if ($Probe) {
     if ($itext -notmatch 'stride 0x1F0: best lattice holds 4 stores') {
         throw 'the fixed-array test did not recover the lattice through its gaps'
     }
+    # THE LATTICE WALK. Index 3 is a store the player owns and has never filled:
+    # a grid, a miCapacity and a mask, but capacity 0 and no element array. The
+    # discovery gate cannot see it -- there is nothing to validate -- so if it
+    # appears at all, it appears because it was read BY POSITION. That is the whole
+    # point of the second pass, and it is what builds the index -> inventory map.
+    if ($itext -notmatch 'LATTICE WALK') {
+        throw 'the lattice walk did not run'
+    }
+    if ($itext -notmatch '(?m)^\s+3\s+0x[0-9A-F]+\s+10x6\s+7\s+7\s+0/0\s+\(empty\)') {
+        throw 'the lattice walk did not report the owned-but-empty store at index 3'
+    }
+    # And it must still find the populated ones at their own indices, or the walk
+    # is reporting a lattice that does not line up with what discovery found.
+    foreach ($idx in 0, 1, 2, 5) {
+        if ($itext -notmatch "(?m)^\s+$idx\s+0x[0-9A-F]+\s+\d+x\d+") {
+            throw "the lattice walk skipped index $idx"
+        }
+    }
     if ($itext -notmatch 'miCapacity 30' -or $itext -notmatch 'store 10/15 used/alloc') {
         throw 'phase L did not report miCapacity and the used/allocated split'
     }
@@ -166,8 +184,9 @@ if ($Probe) {
     Write-Host ""
     Write-Host "phase L control PASSED: 5 live inventories, grid positions intact,"
     Write-Host "  mStore.size walked rather than mStore.capacity, the -0x80 mask read"
-    Write-Host "  back, the 0x1F0 lattice recovered through its gaps, and the object"
-    Write-Host "  whose capacities disagree rejected."
+    Write-Host "  back, the 0x1F0 lattice recovered through its gaps, the walk"
+    Write-Host "  reporting the owned-but-empty store that discovery cannot see, and"
+    Write-Host "  the object whose capacities disagree rejected."
 
     # Phase P: the run of 27. Asserted on the COUNT, not on "a run was found" --
     # a cluster of three would satisfy any presence check while meaning the stride
