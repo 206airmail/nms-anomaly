@@ -15,6 +15,9 @@ app/src-tauri/target/
 app/src-tauri/gen/
 hook/bin/
 hook/obj/
+# Atlas plugins built from this repo; same reasoning as hook/.
+plugins/*/bin/
+plugins/*/obj/
 /build/
 /dist/
 

@@ -1,0 +1,201 @@
+NMS instance probe -- run 1, hook 0.2.0
+================================================================
+Finding live cGcInventoryContainer objects by signature. Offsets come
+from the descriptor table in NMS.exe and are valid for ONE build; the
+image this ran against is stamped below.
+
+build:   NMS.exe base 0x7FF7EACC0000  timestamp 0x6AB0FFC9
+PHASE L -- live inventories, by the measured runtime layout
+----------------------------------------------------------------
+  The runtime object is cGcInventoryStore, not cGcInventoryContainer. What
+  identifies it is a capacity appearing twice, at +0x08 and +0x18, around a
+  pointer at +0x10 to an array where every slot parses as an element.
+  This build walks size(+0x0C), not capacity(+0x08) -- the earlier one read
+  past the end of every inventory -- and additionally reports miCapacity,
+  the history vector, the -0x80 ownership mask and a lattice test, all of
+  which are UNVERIFIED against the live game and none of which can reject
+  an inventory.
+
+  scanned 8215.3 MB (0 regions faulted)
+  47557967 had a plausible capacity at +0x08, 2881231 also matched at +0x18,
+  35901 also had a grid of 1..64 per side, 11853 also a usable pointer at +0x10
+  -> 11853 candidates
+  of those 11853, 1108 also had 1 <= size(+0x0C) <= capacity(+0x08) --
+  the invariant this build reads but does not yet trust
+
+  0x2431EC0BF50  grid 6x3  miCapacity 12  store 4/4 used/alloc
+    history 4/4  mask popcount 13  tail past size: 0 of 0 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(1,0), LASER x200/200 @(2,0), TERRAINEDITOR x600/600 @(0,1)
+
+  0x2431EC0FBE0  grid 6x3  miCapacity 18  store 4/4 used/alloc
+    history 4/4  mask popcount 21  tail past size: 0 of 0 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(1,0), LASER x200/200 @(2,0), BOLT x-1/200 @(3,0)
+
+  0x243C599C2E0  grid 10x12  miCapacity 24  store 12/16 used/alloc
+    history 0/16  mask popcount 24  tail past size: 4 of 4 not element-shaped
+    GPSV3_0000A9 x1/10 @(1,0), FUEL1 x273/9999 @(2,0), LAUNCHSUB x34/9999 @(0,1), CATALYST1 x111/9999 @(1,1), FUEL2 x44/9999 @(2,1), CATALYST2 x48/9999 @(3,1), OXYGEN x829/9999 @(5,1), LAND2 x39/9999 @(0,0), LAND1 x93/9999 @(4,1), BUILD_REFINER1 x1/1 @(6,1), TRA_CURIO1 x1/10 @(0,2), NAV_DATA x1/40 @(1,2)
+
+  0x243C599C528  grid 10x6  miCapacity 10  store 3/4 used/alloc
+    history 0/4  mask popcount 10  tail past size: 0 of 1 not element-shaped
+    JET1 x1/100 @(0,0), PROTECT x80/80 @(1,0), ENERGY x16/100 @(0,1)
+
+  0x243C59A1E30  grid 10x3  miCapacity 28  store 2/2 used/alloc
+    history 0/2  mask popcount 36  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x243C59A2078  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x243C59A22C0  grid 10x3  miCapacity 30  store 2/2 used/alloc
+    history 0/2  mask popcount 40  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_LASER x200/200 @(1,0)
+
+  0x243C59A2508  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x243C59A2750  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x243C59A2998  grid 10x3  miCapacity 28  store 1/1 used/alloc
+    history 0/1  mask popcount 36  tail past size: 0 of 0 not element-shaped
+    SUB_ENGINE x0/400 @(0,0)
+
+  0x243C59A2BE0  grid 10x3  miCapacity 28  store 3/4 used/alloc
+    history 0/4  mask popcount 36  tail past size: 0 of 1 not element-shaped
+    MECH_ENGINE x300/300 @(0,0), MECH_BOOST x-1/100 @(1,0), MECH_PROT x-1/100 @(2,0)
+
+  0x243C59A2E28  grid 7x5  miCapacity 25  store 3/4 used/alloc
+    history 0/4  mask popcount 25  tail past size: 0 of 1 not element-shaped
+    ROCKETSUB x125/9999 @(2,0), ASTEROID1 x8/9999 @(3,0), GEODE_SPACE x1/50 @(4,0)
+
+  0x243C59A64F8  grid 7x3  miCapacity 13  store 5/8 used/alloc
+    history 0/8  mask popcount 13  tail past size: 1 of 3 not element-shaped
+    LAUNCHER x176/200 @(0,0), SHIPJUMP1 x92/200 @(1,0), SHIPSHIELD x200/200 @(2,0), SHIPGUN1 x100/100 @(5,0), SHIPROCKETS x10/100 @(0,1)
+
+  0x243C5C43070  grid 7x3  miCapacity 8  store 3/4 used/alloc
+    history 0/4  mask popcount 8  tail past size: 0 of 1 not element-shaped
+    LASER x5/200 @(0,0), SCAN1 x50/100 @(1,0), SCANBINOC1 x50/100 @(2,0)
+
+  why the rest were not inventories:
+    handle unreadable      0
+    count out of range     2
+    slot array unreadable  11815
+    a slot was malformed   4
+    every slot was empty   18
+
+  14 objects held a fully-parsing slot array with items
+
+  THE THREE THINGS THIS RUN IS TESTING
+    1. size(+0x0C) is the element count, not capacity(+0x08):
+       0 of 14 had to fall back to capacity, and 2 of 14 had a tail
+       past size that is NOT element-shaped. A high tail figure and a
+       low fallback figure together confirm it.
+    2. the ownership mask at -0x80: 14 of 14 readable, 5 of those had
+       popcount == miCapacity with no bits above 15.
+    3. whether the stores lie on a lattice -- below.
+
+  FIXED-ARRAY TEST -- do the validated stores lie on a lattice?
+    14 stores, 27 distinct gaps under 256 KB
+    most common gaps:
+      0x248    x8
+      0x490    x6
+      0x6D8    x5
+      0x920    x4
+      0xB68    x3
+      0x6900   x2
+      0x66B8   x2
+      0x6470   x2
+      0x6228   x2
+      0x5FE0   x2
+    stride 0x248: best lattice holds 8 stores from 0x243C59A1E30
+    stride 0x490: best lattice holds 4 stores from 0x243C59A1E30
+    stride 0x6D8: best lattice holds 3 stores from 0x243C59A1E30
+    A stride that collects 28, 12 or 7 stores is sizeof(cGcInventoryStore)
+    and names them by index. One that collects 2 or 3 is a coincidence.
+
+  LATTICE WALK -- every slot at stride 0x248 from 0x243C59A1E30, empty ones
+  included. Index is what names an inventory; match the populated ones to
+  the save by contents and the empty ones come free.
+
+   index  address        grid     miCap  mask  size/alloc   contents
+      -7  0x0243C59A0E38 10x5        40    48  0/0          (empty)
+      -6  0x0243C59A1080 7x5         30    37  0/0          (empty)
+      -5  0x0243C59A12C8 10x5        50    60  0/0          (empty)
+      -4  0x0243C59A1510 7x5         30    37  0/0          (empty)
+      -3  0x0243C59A1758 7x5         30    37  0/0          (empty)
+      -2  0x0243C59A19A0 10x5        40    48  0/0          (empty)
+      -1  0x0243C59A1BE8 10x5        40    48  0/0          (empty)
+       0  0x0243C59A1E30 10x3        28    36  2/2          VEHICLE_ENGINE x300, VEHICLE_BOOST x-1
+       1  0x0243C59A2078 10x3        26    34  2/2          VEHICLE_ENGINE x300, VEHICLE_BOOST x-1
+       2  0x0243C59A22C0 10x3        30    40  2/2          VEHICLE_ENGINE x300, VEHICLE_LASER x200
+       3  0x0243C59A2508 10x3        26    34  2/2          VEHICLE_ENGINE x300, VEHICLE_BOOST x-1
+       4  0x0243C59A2750 10x3        26    34  2/2          VEHICLE_ENGINE x300, VEHICLE_BOOST x-1
+       5  0x0243C59A2998 10x3        28    36  1/1          SUB_ENGINE x0
+       6  0x0243C59A2BE0 10x3        28    36  3/4          MECH_ENGINE x300, MECH_BOOST x-1, MECH_PROT x-1
+       7  0x0243C59A2E28 7x5         25    25  3/4          ROCKETSUB x125, ASTEROID1 x8, GEODE_SPACE x1
+       8  0x0243C59A3070 1x1          1     0  0/0          (unused slot)
+       9  0x0243C59A32B8 1x1          1     0  0/0          (unused slot)
+      10  0x0243C59A3500 1x1          1     0  0/0          (unused slot)
+      11  0x0243C59A3748 1x1          1     0  0/0          (unused slot)
+      12  0x0243C59A3990 1x1          1     0  0/0          (unused slot)
+      13  0x0243C59A3BD8 1x1          1     0  0/0          (unused slot)
+      14  0x0243C59A3E20 1x1          1     0  0/0          (unused slot)
+      15  0x0243C59A4068 1x1          1     0  0/0          (unused slot)
+      16  0x0243C59A42B0 1x1          1     0  0/0          (unused slot)
+      17  0x0243C59A44F8 1x1          1     0  0/0          (unused slot)
+      18  0x0243C59A4740 1x1          1     0  0/0          (unused slot)
+      20  0x0243C59A4BD0 0x0          0     1  0/0          (empty)
+      21  0x0243C59A4E18 0x0          0     1  0/0          (empty)
+      22  0x0243C59A5060 0x0          0     1  0/0          (empty)
+      23  0x0243C59A52A8 0x0          0     1  0/0          (empty)
+      24  0x0243C59A54F0 0x0          0     1  0/0          (empty)
+      25  0x0243C59A5738 0x0          0     1  0/0          (empty)
+      26  0x0243C59A5980 0x0          0     1  0/0          (empty)
+      27  0x0243C59A5BC8 0x0          0     1  0/0          (empty)
+      28  0x0243C59A5E10 0x0          0     1  0/0          (empty)
+      29  0x0243C59A6058 0x0          0     1  0/0          (empty)
+      30  0x0243C59A62A0 0x0          0     1  0/0          (empty)
+      31  0x0243C59A64E8 0x0          0    14  0/0          (empty)
+      32  0x0243C59A6730 0x0          0     1  0/0          (empty)
+      33  0x0243C59A6978 0x0          0     1  0/0          (empty)
+      34  0x0243C59A6BC0 0x0          0     1  0/0          (empty)
+      35  0x0243C59A6E08 0x0          0     1  0/0          (empty)
+      36  0x0243C59A7050 0x0          0     1  0/0          (empty)
+      37  0x0243C59A7298 0x0          0     1  0/0          (empty)
+      38  0x0243C59A74E0 0x0          0     1  0/0          (empty)
+      39  0x0243C59A7728 0x0          0     1  0/0          (empty)
+      40  0x0243C59A7970 0x0          0     1  0/0          (empty)
+      41  0x0243C59A7BB8 0x0          0     1  0/0          (empty)
+      42  0x0243C59A7E00 0x0          0     1  0/0          (empty)
+
+    49 slots walked. An index with a grid and a mask
+    but no contents is an inventory the player owns and has
+    not filled; one with neither is past the end of the array.
+
+PHASE P -- skipped: phase L already found live inventories.
+----------------------------------------------------------------
+
+PHASE 1 -- containers by their own signature
+----------------------------------------------------------------
+
+  scanned 6694.5 MB, 578984 positions passed the cheap filter,
+  0 containers reported, 22 regions faulted
+  why the rest were rejected:
+    width                      3403
+    height                     267
+    version                    155
+    class/stackGroup           399008
+    isCool                     33
+    name not a string256       172235
+    slots handle               3883
+
+VERDICT: LIVE INVENTORIES FOUND (14)
+----------------------------------------------------------------
+  Objects in the runtime layout, each with a slot array in which every
+  declared slot parses. Beware duplicates: the same stack has been seen
+  at eight addresses (live state, save-document copies, UI buffers), so
+  a WRITE must establish which copy the game actually reads.
+  probe took 160953 ms

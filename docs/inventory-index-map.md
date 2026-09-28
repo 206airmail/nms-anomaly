@@ -76,13 +76,89 @@ while `miCapacity` does not (it still reads 24).
 `GraveInventory` and `ShipInventory` are both `0x0` with no slots in the save and
 were not matched. They are presumably among the `1x1` unowned entries.
 
+## Confirmed against a SECOND save (2026-09-28)
+
+The map above was measured on a veteran save. It has now been walked on a
+brand-new one, and **every index agrees**. That is what makes it an asset
+rather than a description of one save file. Full record:
+`docs/measurements/lattice-walk_2026-09-28_fresh-save.txt`.
+
+The only entries that differ are the ones that have to:
+
+| idx | veteran | fresh | why |
+|---|---|---|---|
+| 3 | `8x3`, 24 | `7x3`, 8 | a different multitool |
+| 7 | `7x5`, 33 | `7x5`, 16 | freighter not earned |
+| 28 | `8x4`, 32 | `1x1`, **0** | **not instantiated in a new save** |
+
+Index 28 was the one unidentified entry in the table. A fresh save reading
+`1x1/0` means it is something the player **acquires**, not a type the game
+always allocates -- which is the first real constraint on what it can be.
+
+Two things the second save also settled:
+
+* **`miCapacity` tracks the mask almost everywhere.** Exosuit tech reads
+  `10/10` fresh against `18/18` veteran, the freighter `16` against `33`. So
+  `miCapacity` is not the creation-time constant it looked like. The single
+  exception is index 0, the exosuit general inventory, frozen at **24** while
+  the mask reads 31 -- and 24 is confirmed to be what a new exosuit starts
+  with. Prefer the mask; it is right in every store in both saves.
+* **The exocraft `+8` is not an anomaly and not player state.** The seven
+  `mVehicleTechInventories` entries read the identical `miCapacity` sequence
+  `[28, 26, 30, 26, 26, 28, 28]` with identical contents in *both* saves, in
+  neither of which any exocraft is owned. They are default templates, so
+  neither their mask nor their `miCapacity` describes ownership. Nothing here
+  needs explaining and nothing should be built on those two numbers.
+
 ## Reproducing this
 
+**Two seconds, no scan** -- the object is reachable through a static pointer
+(see `tools/nms_verify_pointer.py` for the RVA and what confirms it):
+
+    python tools/nms_live_walk.py --from-pointer
+
+**Bootstrapping from nothing**, which is what to do after a game patch moves
+the RVA:
+
 1. `InstProbeOnSave=0` in `<game>\Binaries\NMSLogger\config.ini`
-2. Load a save and be in world -- at the main menu no inventories exist yet, and a
-   run started there finds nothing however long it scans
+2. Load a save and be in world -- at the main menu the object exists but every
+   store reads `1x1 / miCap 1 / mask 0`, so a run started there finds nothing
+   however long it scans
 3. Create `<game>\Binaries\NMSLogger\probe.now`
 4. ~160 s later, read the `LATTICE WALK` section of `instprobe_<n>.txt`
+5. Feed the exosuit address back in to re-derive the pointer:
+   `python tools/nms_live_walk.py --anchor <hex>`
 
-`runNo` restarts at 1 each session, so a report worth keeping must be copied out
-before the next run overwrites it.
+`runNo` restarts at 1 each session, so a report worth keeping must be copied
+out before the next run overwrites it; the ones that mattered are in
+`docs/measurements/`.
+
+**Careful with the discovery scan's anchor.** On the fresh save the probe
+anchored its walk on the *vehicle-tech* array, not `mInventories`, because it
+picks the lattice holding the most populated stores -- and the seven exocraft
+templates are always populated while a new player's own inventories mostly are
+not. The walk was correct and the indices meant something else entirely. Check
+what the anchor is before reading indices as names.
+
+## Cross-checked against a labelled save, 25/25 (2026-09-28)
+
+The map is built from process memory, which carries no names. A save exported
+from the *same* game state carries names and no addresses. If index -> name is
+right, then for every index the live grid and ownership mask must equal that
+member's `Width`/`Height` and `len(ValidSlotIndices)`.
+
+    python tools/nms_crosscheck_map.py <store-dump.json> <save.json>
+
+**25 of 25 matched exactly, zero mismatches** -- including all ten chests at
+`10x6/50`, the magic pair at `48`, the freighter at `7x5/33`, RocketLocker
+`7x3/21`, FishPlatform `10x6/60`, the `1x1/1` bait-box and food-unit pair and
+CorvetteStorage at `10x16/160`. Nothing was fitted: the map predates the export.
+
+That settles two claims at once -- that the index names the inventory, and that
+the `-0x80` mask is exactly the save's `ValidSlotIndices`.
+
+**It does NOT settle ownership, and cannot.** `ValidSlotIndices` is how many
+cells a store has; every container is pre-allocated at full size in a save
+owning none of them. See `docs/todo.md` and the ownership notes: chests are
+granted by `^FRE_ROOM_STORE{n}` base objects, the freighter by
+`CurrentFreighter.Filename`, ships by `Resource.Seed[0]`.

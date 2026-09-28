@@ -1,0 +1,88 @@
+Lattice walk -- FRESH SAVE, NMS 7.03 (image stamp 0x6AB0FFC9)
+Measured 2026-09-28 by ReadProcessMemory from Python, anchored on the exosuit
+address the instance probe had just found (0x243C599C2E0, pid 44992).
+
+This is the second save this map has been measured against. The first was a
+veteran save (docs/measurements/instprobe_2026-09-27_layout-settled.txt). The
+point of the run is that the indices agree, which is what makes the map an
+asset rather than a description of one save.
+
+NMS.exe base 0x7FF7EACC0000   stride 0x248   mask at base-0x80, 16 u64 words
+
+  idx        address grid     miCap  mask  cells  size/alloc  contents
+   -8 0x0243C599B0A0 0x0          0     0      0         0/0  (empty)
+   -7 0x0243C599B2E8 0x0          0     2      0         0/0  (empty)  <-- implausible
+   -6 0x0243C599B530 0x0        512     2      0         0/0  (empty)  <-- implausible
+   -5 0x0243C599B778 0x0          0     6      0         0/0  (empty)  <-- implausible
+   -4 0x0243C599B9C0 0x0          0    46      0         0/0  (empty)  <-- implausible
+   -3 0x0243C599BC08 0x0          0    31      0         0/0  (empty)  <-- implausible
+   -2 0x0243C599BE50 0x0          0     0      0         0/0  (empty)
+   -1 0x0243C599C098 0x0          0     0      0         0/0  (empty)
+    0 0x0243C599C2E0 10x12       24    24    120       12/16  GPSV3_0000A9 x1@(1,0), FUEL1 x273@(2,0), LAUNCHSUB x34@(0,1), CATALYST1 x111@(1,1), FUEL2 x44@(2,1), CATALYST2 x48@(3,1), OXYGEN x829@(5,1), LAND2 x39@(0,0), LAND1 x93@(4,1), BUILD_REFINER1 x1@(6,1), TRA_CURIO1 x1@(0,2), NAV_DATA x1@(1,2)
+    1 0x0243C599C528 10x6        10    10     60         3/4  JET1 x1@(0,0), PROTECT x80@(1,0), ENERGY x16@(0,1)
+    2 0x0243C599C770 7x5          0     0     35         0/0  (empty)
+    3 0x0243C599C9B8 7x3          8     8     21         3/3  LASER x5@(0,0), SCAN1 x50@(1,0), SCANBINOC1 x50@(2,0)
+    4 0x0243C599CC00 1x1          1     0      1         0/0  (empty)
+    5 0x0243C599CE48 1x1          1     0      1         0/0  (empty)
+    6 0x0243C599D090 1x1          1     0      1         0/0  (empty)
+    7 0x0243C599D2D8 7x5         16    16     35         0/0  (empty)
+    8 0x0243C599D520 7x3         13    13     21         0/0  (empty)
+    9 0x0243C599D768 7x5          0     0     35         0/0  (empty)
+   10 0x0243C599D9B0 1x1          1     0      1         0/0  (empty)
+   11 0x0243C599DBF8 1x1          1     0      1         0/0  (empty)
+   12 0x0243C599DE40 10x6        50    50     60         0/0  (empty)
+   13 0x0243C599E088 10x6        50    50     60         0/0  (empty)
+   14 0x0243C599E2D0 10x6        50    50     60         0/0  (empty)
+   15 0x0243C599E518 10x6        50    50     60         0/0  (empty)
+   16 0x0243C599E760 10x6        50    50     60         0/0  (empty)
+   17 0x0243C599E9A8 10x6        50    50     60         0/0  (empty)
+   18 0x0243C599EBF0 10x6        50    50     60         0/0  (empty)
+   19 0x0243C599EE38 10x6        50    50     60         0/0  (empty)
+   20 0x0243C599F080 10x6        50    50     60         0/0  (empty)
+   21 0x0243C599F2C8 10x6        50    50     60         0/0  (empty)
+   22 0x0243C599F510 10x6        48    48     60         0/0  (empty)
+   23 0x0243C599F758 10x6        48    48     60         0/0  (empty)
+   24 0x0243C599F9A0 1x1          1     0      1         0/0  (empty)
+   25 0x0243C599FBE8 1x1          1     0      1         0/0  (empty)
+   26 0x0243C599FE30 10x6        50    50     60         0/0  (empty)
+   27 0x0243C59A0078 7x3         21    21     21         0/0  (empty)
+   28 0x0243C59A02C0 1x1          0     0      1         0/0  (empty)     <-- 8x4/32 in the veteran save
+   29 0x0243C59A0508 10x6        60    60     60         0/0  (empty)
+   30 0x0243C59A0750 1x1          1     1      1         0/0  (empty)
+   31 0x0243C59A0998 1x1          1     1      1         0/0  (empty)
+   32 0x0243C59A0BE0 10x16      160   160    160         0/0  (empty)
+   33 and up: misaligned by the 16-byte cTkVector that follows mInventories.
+
+=== STATIC POINTER HUNT ===
+looking for qwords in [0x243C595C2E0, 0x243C59DC2E0) inside NMS.exe sections
+  scanning .data    0x7FF7EFA80000  39.6 MB
+  scanning _RDATA   0x7FF7F2209000  0.0 MB
+
+  1 candidate static pointer:
+    NMS.exe+0x06E7AAE8  ->  0x243C5990010   (exosuit is +0xC2D0 from it)
+
+Dereferenced in the same process: 0x243C5990010 + 0xC2D0 = 0x243C599C2E0,
+grid 10x12, miCap 24, mask 24, 12/16 -- the exosuit. That proves only
+self-consistency; the claim that the RVA is fixed while the value moves has
+to be settled by a PROCESS RESTART. See tools/nms_verify_pointer.py.
+
+=== RESTART TEST -- the claim settled ===
+Same fresh save, game quit to desktop and relaunched (pid 44992 -> 46820).
+
+                     first process        second process
+  RVA                NMS.exe+0x06E7AAE8   NMS.exe+0x06E7AAE8
+  value behind it    0x243C5990010        0x266C8B80010
+  + 0xC2D0           0x243C599C2E0        0x266C8B8C2E0
+  reads              10x12 miCap 24       10x12 miCap 24
+                     mask 24, 12/16       mask 24, 12/16
+  first item         GPSV3_0000A9 x1      GPSV3_0000A9 x1
+
+The address moved, the RVA did not. That is the whole claim, and it is what
+one process cannot show.
+
+CAUGHT BY ACCIDENT, AND WORTH MORE THAN THE PASS: the first read of the new
+process happened during loading and returned a NON-NULL pointer whose store
+read 1x1 / miCap 1 / mask 0. So cGcPlayerState is constructed BEFORE the save
+is loaded. A plugin host can therefore resolve the singleton at startup, but
+"pointer is non-null" is not "world is ready" -- nms_verify_pointer.py fails
+rather than passes on that state, deliberately.

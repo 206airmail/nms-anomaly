@@ -6,6 +6,67 @@ several of these were expensive to learn and are easy to re-attempt by accident.
 
 Last updated 2026-09-27.
 
+## THE API IS NOW ITS OWN PRODUCT -- read this before touching hook/
+
+Nick, 2026-09-28: the plugin API is a standalone product. Anomaly may install
+it, list installed plugins and manage them, but people must be able to use it
+without Anomaly.
+
+**Repo: `206airmail/nms-atlas`** (private, MIT, fresh history).
+Local: `D:\Users\brown\Documents\Misc Stuff\Atlas`.
+
+**The constraint that forced the split:** the DLL loads because it is named
+`xinput9_1_0.dll`. Only ONE mod can occupy that filename. So Atlas and
+Anomaly's hook cannot both be installed, and "separate them and both keep
+working" was never available.
+
+**Therefore: Anomaly's session recording becomes an Atlas PLUGIN.** Not a
+compromise -- Anomaly then consumes the same public contract as a third party
+and cannot get privileged access plugin authors lack.
+
+### What lives where
+
+| tree | what it is |
+|---|---|
+| `Atlas/` (separate repo) | **the product.** The host, the API, the example plugin. |
+| `plugins/anomaly_recorder/` | Anomaly's session recording, **as an Atlas plugin**. |
+| `hook/` | **a research DLL only** -- `metaprobe.cpp` and `nopause.cpp`. |
+
+The duplicated API copies under `hook/` are gone; Atlas is the only place
+`gamestate` and `plugins` exist.
+
+### Why `hook/` still builds, which I got wrong at first
+
+The first version of this plan said to delete `hook/`'s API copies as though
+`hook/` were finished. It is not: **`metaprobe.cpp` has to run inside the
+game**, and Atlas now owns the only filename the game will load. So `hook/`
+stays buildable as a research DLL you swap into the proxy slot temporarily
+when you need the from-nothing heap scan, then swap back out.
+
+In practice that should be rare now. The bootstrapping path is
+`tools/nms_xrefs.py` (offline, finds the global by signature) ->
+`tools/nms_live_walk.py` (external, via ReadProcessMemory). The 8 GB in-game
+scan is only needed if the signature itself ever stops matching.
+
+### The port
+
+1. ~~`anomaly_recorder` as an Atlas plugin~~ **done 2026-09-28.** Same config
+   file, same log path, same pipe protocol, so the Anomaly app needs no change.
+   Brings its own MinHook. **One permanent tradeoff:** hooks now install when
+   Atlas loads the plugin rather than in `DllMain`, so a few of the earliest
+   file opens are no longer recorded. Module loads are caught up on install.
+   See `plugins/anomaly_recorder/README.md`.
+2. `nopause.cpp` becomes its own plugin -- it is already the right shape (one
+   behaviour, one flag, touches no game code). Still in `hook/` for now.
+3. `metaprobe.cpp` stays a research tool; it is not a plugin. See above.
+4. Anomaly learns to install Atlas and to list/enable/disable plugins. **This
+   is the remaining user-visible work.** Note the host currently recognises its
+   recorder by a marker string in the proxy DLL; it must now look for the
+   plugin in `<game>\Binaries\Atlas\plugins\` instead.
+
+A backup of the old combined hook sits at
+`<game>\Binaries\xinput9_1_0.anomaly.dll` if a fallback is ever needed.
+
 ## Plugin UI
 
 Designed 2026-09-27 in `docs/plugin-ui.md`. The short version: **define the
@@ -24,7 +85,50 @@ table, because the loaded-module list misleadingly suggests D3D12.
 The API's purpose is to be a **host for separate, independently developed plugins**.
 Everything below serves that.
 
-### 1. Does a brand-new save start with 24 exosuit slots?
+### 1. ~~Does a brand-new save start with 24 exosuit slots?~~ ANSWERED 2026-09-28
+
+**Yes -- 24.** Nick read it off a fresh save and the live mask agrees (`24/24`
+where the veteran save reads `24/31`). So `miCapacity` on index 0 is frozen at
+its starting value.
+
+It is frozen *only* there, which is the part the fresh save corrected: exosuit
+tech reads `10/10` fresh against `18/18` veteran and the freighter `16` against
+`33`, so `miCapacity` tracks the mask everywhere else. It is not a
+creation-time constant in general. **Prefer the mask** -- it is right in all 33
+stores in both saves and equals the save's `ValidSlotIndices` 25 for 25.
+
+Also settled in the same run, and it was a wrong prediction of mine: the
+exocraft `+8` is not an anomaly. Those seven read the identical `miCapacity`
+sequence with identical contents in *both* saves, in neither of which any
+exocraft is owned. They are default templates, so neither number ever described
+the player. Nothing to explain.
+
+### 1b. WHICH INVENTORIES CAN THE PLAYER ACTUALLY REACH? -- answered, and it
+### refuted a rule we had recorded as verified
+
+`len(ValidSlotIndices) > 0` is **not** an ownership test. A fresh save owning no
+freighter and no base still reads ten chests at 50, the Corvette cache at 160,
+FishPlatform at 60 and the freighter at 16. The old rule was only ever checked
+against a save where everything was owned.
+
+A byte-for-byte diff of all 33 stores across both saves shows ownership is not
+in `cGcInventoryStore` at all: owned-but-empty chests are **identical** to
+chests in a save owning none. The real tests, from the labelled save:
+
+| inventory | test |
+|---|---|
+| `ChestN` | `^FRE_ROOM_STORE{N-1}` in a `FreighterBase` in `PersistentPlayerBases` |
+| freighter | `CurrentFreighter.Filename != ""` |
+| ships | `ShipOwnership[i].Resource.Seed[0] is true` (1 fresh, 3 veteran) |
+
+**Trap:** `CurrentFreighter.Seed[0]` is `true` with no freighter, so the rule
+that works for ships is a false positive on the freighter.
+
+Open: all three of these have been read from the *save*. Finding them in live
+memory is the remaining work, and it is what an accessibility query in the API
+needs.
+
+### 1c. Old question, kept because it is still unresolved
 
 The exosuit's `miCapacity` reads **24** while Nick owns 31. It did not move when he
 bought a slot, and it did not move across a process restart, so it is a persistent
@@ -55,7 +159,20 @@ Worth doing at the same time, since a fresh save is cheap to probe and has *know
 contents: check whether `miCapacity` equals owned for every other inventory in a
 save where nothing has been expanded yet. That isolates "expansion" as the variable.
 
-### 2. Map index -> inventory, once
+### 2. ~~Map index -> inventory, once~~ DONE, and independently confirmed
+
+Built 2026-09-27 (`docs/inventory-index-map.md`), reproduced on a second save
+2026-09-28, and cross-checked **25 of 25** against a labelled export from the
+same game state -- grid and mask both, nothing fitted, the map predates the
+export. `python tools/nms_crosscheck_map.py <dump> <save>` re-runs it.
+
+Only index 28 remains unidentified. It reads `1x1/0` in a fresh save and
+`8x4/32` in the veteran one, so it is something the player **acquires**, and it
+is the only member of its `+0x7C` kind (`0x0C`). That narrows it a lot.
+
+The historical detail below is kept because the offsets still hold.
+
+### 2b. The original note
 
 `sizeof(cGcInventoryStore) = 0x248`, the stores sit in `cTkFixedArray` runs inside
 `cGcPlayerState`, and **the internal offsets are identical across process restarts**
@@ -82,20 +199,50 @@ rather than rejecting it. Do that and the whole map falls out of one run.
 Note index 32 is past the 28 ReNMS records for `mInventories` at 4.13, so the array
 grew by 7.03. Measure it, do not assume it.
 
-### 3. Stop scanning: hook the constructor
+### 3. ~~Stop scanning~~ DONE 2026-09-28 -- and the constructor hook is now easier
 
-The 8 GB walk takes 162 s when it succeeds and 13 minutes when it does not. It is a
-bootstrapping tool, not the mechanism. NoMansSky.Api hooks `cGcPlayerState::Construct`
-and keeps `self`; the game then hands over the instance *and its identity*, and with
-(2) every inventory is a fixed offset away.
+The 8 GB walk is retired. `cGcPlayerState` is reachable through one static
+global:
 
-Costs one signature, which we must derive ourselves (its patterns live in a binary
-assembly and are 2023 anyway). A signature is a smaller and far more testable
-problem than an 8 GB heuristic.
+    exosuit = *(NMS.exe + 0x06E7AAE8) + 0xC2D0      // 7.03, stamp 0x6AB0FFC9
 
-Free confirmation available with no signature at all: `muUnits` and `muNanites` sit
-before the inventories in the same object, so reading them and comparing against the
-HUD proves the base.
+Found by scanning `.data` (39.6 MB, milliseconds) for a single qword pointing
+into the object -- exactly one hit -- and **confirmed across a process restart**:
+the value moved `0x243C5990010 -> 0x266C8B80010`, the RVA and the delta did not.
+`tools/nms_verify_pointer.py` re-checks it in one command and warns if the image
+stamp changed; `tools/nms_live_walk.py --anchor <hex>` re-derives it after a
+patch.
+
+Two lifecycle facts, both found by accident, both load-bearing for a host:
+
+- The object is constructed **before the save loads**. During loading the
+  pointer is non-null and every store reads `1x1 / miCap 1 / mask 0`. So a host
+  can resolve singletons at startup, but "non-null" is not "world ready".
+- It **survives a save switch in place**. Loading another save from the in-game
+  menu kept the same address with different contents, so a cached pointer stays
+  valid while cached contents silently become another save's.
+
+**The signature is done too, and it removed the need for the hook.**
+`tools/nms_xrefs.py` found 26,743 reads and 3 writes to that global; the first
+write is the construction site:
+
+    48 89 05 ?? ?? ?? ??   mov [rip+global], rax
+    41 B8 ?? ?? ?? ??      mov r8d, 0x0094F120    ; sizeof the object
+    48 8B C8               mov rcx, rax
+
+Measured **unique in 54.5 MB of .text** across four variants, including the
+shortest with both the displacement and the size wildcarded. It carries the
+global's address in its own displacement, so it re-derives the RVA on whatever
+build is running. Discovery is now a read-only scan that patches nothing --
+a constructor hook would only buy exact timing, and 1 Hz polling buys that for
+no risk.
+
+**The global is the ROOT SINGLETON, not `cGcPlayerState`** -- ~9.76 MB, with
+read sites reaching 9.6 MB into it, and player inventories only 0.5% in at
+`+0xC2D0`. That is why this is a foundation for arbitrary plugins rather than
+an inventory trick.
+
+Shipped as `hook/src/gamestate.cpp`; see `docs/game-state-pointer.md`.
 
 ### 4. Which copy is authoritative?
 
@@ -107,9 +254,18 @@ already from Cheat Engine.
 
 ### 5. Loose ends in the layout
 
-- **Exocraft tech stores read `mask popcount == miCapacity + 8`**, and 36 bits on a
-  10x3 grid is more bits than cells. Everywhere else the mask is the owned count and
-  tracks changes. Unexplained; use `miCapacity` for those seven.
+- ~~**Exocraft tech stores read `mask popcount == miCapacity + 8`**~~ **EXPLAINED
+  2026-09-28 -- there was nothing to explain.** The seven read the identical
+  `miCapacity` sequence `[28, 26, 30, 26, 26, 28, 28]` with identical contents in
+  both a veteran and a brand-new save, in neither of which any exocraft is owned.
+  They are default templates, so neither their mask nor their `miCapacity` ever
+  described the player. Do not build on either number.
+- **A kind enum at `store+0x7C`** groups inventories by type: `1` exosuit, `2` its
+  cargo, `5`/`6` freighter and cargo, `8` all ten chests + rocket locker + fish
+  platform + food unit, `9` the magic pair and the Corvette cache, `0x0A` bait box,
+  `0x0C` index 28 alone, `0` every technology inventory *and* every unused slot.
+  Useful for naming by kind; useless for ownership, and it does not carry the
+  parent's class.
 - `mStoreHistory` is read and reported but its purpose is unknown. It is frequently
   `0/N` -- allocated, unused.
 - Two multitool-shaped stores sit **off** the player-state lattice entirely

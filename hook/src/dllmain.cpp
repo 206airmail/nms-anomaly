@@ -66,7 +66,8 @@ void Start() {
                   "config: modFileOpens=%d fileFailures=%d allFileOpens=%d firstChance=%d "
                   "moduleLoads=%d saveWrites=%d memory=%d debugPerSec=%d "
                   "metaProbe=%d metaProbeDelay=%ds metaProbeHeap=%d metaProbeBudget=%dMB "
-                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB instProbeOnSave=%d stringHunt=%d noPause=%d",
+                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB instProbeOnSave=%d stringHunt=%d noPause=%d "
+                  "",
                   g_config.logModFileOpens, g_config.logFileFailures, g_config.logAllFileOpens,
                   g_config.logFirstChanceExceptions, g_config.logModuleLoads,
                   g_config.logSaveWrites, g_config.logMemory, g_config.debugOutputPerSecond,

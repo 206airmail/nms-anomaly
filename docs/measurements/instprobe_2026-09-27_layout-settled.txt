@@ -1,0 +1,285 @@
+NMS instance probe -- run 1, hook 0.2.0
+================================================================
+Finding live cGcInventoryContainer objects by signature. Offsets come
+from the descriptor table in NMS.exe and are valid for ONE build; the
+image this ran against is stamped below.
+
+build:   NMS.exe base 0x7FF71AF20000  timestamp 0x6AB0FFC9
+PHASE L -- live inventories, by the measured runtime layout
+----------------------------------------------------------------
+  The runtime object is cGcInventoryStore, not cGcInventoryContainer. What
+  identifies it is a capacity appearing twice, at +0x08 and +0x18, around a
+  pointer at +0x10 to an array where every slot parses as an element.
+  This build walks size(+0x0C), not capacity(+0x08) -- the earlier one read
+  past the end of every inventory -- and additionally reports miCapacity,
+  the history vector, the -0x80 ownership mask and a lattice test, all of
+  which are UNVERIFIED against the live game and none of which can reject
+  an inventory.
+
+  scanned 8202.1 MB (0 regions faulted)
+  47008643 had a plausible capacity at +0x08, 2458291 also matched at +0x18,
+  35465 also had a grid of 1..64 per side, 12038 also a usable pointer at +0x10
+  -> 12038 candidates
+  of those 12038, 1133 also had 1 <= size(+0x0C) <= capacity(+0x08) --
+  the invariant this build reads but does not yet trust
+
+  0x20D76C70640  grid 16x1  miCapacity 16  store 3/4 used/alloc
+    history 2/4  mask popcount 16  tail past size: 0 of 1 not element-shaped
+    MAINT_FUEL1 x100/100 @(0,0), LAUNCHSUB x80/9999 @(1,0), PRODFUEL2 x2/200 @(2,0)
+
+  0x20E17FA2F50  grid 10x3  miCapacity 27  store 6/8 used/alloc
+    history 6/8  mask popcount 36  tail past size: 2 of 2 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(1,0), LASER x200/200 @(2,0), GRENADE x20/20 @(3,0), UP_LASER0#76134 x-1/100 @(4,0), RAILGUN x50/50 @(5,0)
+
+  0x20E17FA6BE0  grid 6x3  miCapacity 15  store 5/8 used/alloc
+    history 5/8  mask popcount 18  tail past size: 1 of 3 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(1,0), LASER x200/200 @(2,0), GRAVITYGUN x600/600 @(3,0), GRENADE x20/20 @(4,0)
+
+  0x20E17FC5060  grid 6x3  miCapacity 9  store 4/4 used/alloc
+    history 4/4  mask popcount 9  tail past size: 0 of 0 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(0,1), LASER x200/200 @(1,1), BOLT x-1/200 @(2,1)
+
+  0x20EBF18C2E0  grid 10x12  miCapacity 24  store 20/32 used/alloc
+    history 0/32  mask popcount 31  tail past size: 0 of 12 not element-shaped
+    CATALYST1 x1363/9999 @(3,0), AMMO x1732/9999 @(1,2), YELLOW2 x371/9999 @(1,1), FUEL2 x329/9999 @(3,1), FUEL1 x2113/9999 @(4,0), LAND1 x5269/9999 @(2,0), CATALYST2 x48/9999 @(5,1), OXYGEN x588/9999 @(6,0), SAND1 x820/9999 @(6,1), LAUNCHFUEL x3/40 @(2,2), EX_YELLOW x334/9999 @(5,0), NAV_DATA_DROP x5/40 @(0,0), LAUNCHSUB x152/9999 @(4,1), ROBOT2 x1307/9999 @(1,0), ROBOT1 x157/9999 @(2,1), ANTIMATTER x3/20 @(0,1), JELLY x3/20 @(3,2), SENTINEL_LOOT x1/10 @(4,2), LAND2 x332/9999 @(0,3), NAV_DATA x1/40 @(0,2)
+
+  0x20EBF18C528  grid 10x6  miCapacity 18  store 17/32 used/alloc
+    history 0/32  mask popcount 18  tail past size: 0 of 15 not element-shaped
+    ENERGY x50/100 @(0,1), UT_ENERGY x50/100 @(1,1), UP_HAZX#54672 x-1/100 @(4,0), UP_COLD3#66117 x-1/100 @(5,0), UP_SHLDX#43821 x-1/100 @(5,1), PROTECT x80/80 @(6,0), UP_SHLD3#85621 x-1/100 @(6,1), UP_SHLDX#89326 x-1/100 @(4,1), POWERGLOVE x50/100 @(0,2), SUIT_REFINER x100/100 @(1,2), UT_TRANSLATE1 x50/100 @(3,2), UP_SNSUIT#41108 x-1/100 @(0,0), UP_SNSUIT#65169 x-1/100 @(1,0), UP_SNSUIT#48610 x-1/100 @(2,0), UP_JETX#97142 x-1/100 @(3,1), JET1 x1/100 @(2,1), UP_JET4#15312 x-1/100 @(2,2)
+
+  0x20EBF18D2D8  grid 7x5  miCapacity 33  store 33/85 used/alloc
+    history 0/85  mask popcount 33  tail past size: 0 of 52 not element-shaped
+    ROCKETSUB x229/9999 @(0,3), MEGAPROD1 x1/20 @(0,0), RADIO1 x9999/9999 @(1,0), ASTEROID3 x982/9999 @(2,0), BUI_SCRAP x243/9999 @(5,0), STATION_KEY x1/1 @(4,0), WALKER_PROD x1/20 @(0,1), ALLOY5 x9/20 @(1,1), ROBOT2 x987/9999 @(2,1), HYDRALIC x2/40 @(5,2), TRA_MINERALS2 x8/100 @(1,2), SHIPCHARGE x9/200 @(4,2), LUSH1 x386/9999 @(3,1), FUEL2 x98/9999 @(6,2), POWERCELL x3/400 @(1,3), LAND3 x761/9999 @(2,2), FRIGATE_FUEL_3 x1/20 @(6,0), QUAD_PROD x1/20 @(4,1), CAVE2 x57/9999 @(3,2), PLANT_HOT x200/9999 @(5,1), FARMPROD3 x2/100 @(3,3), CREATURE1 x12/9999 @(2,3), RED2 x150/9999 @(4,3), LAUNCHSUB2 x150/9999 @(5,3), ALLOY3 x10/20 @(6,3), TRA_COMPONENT5 x5/100 @(0,4), ROBOT1 x187/9999 @(1,4), STELLAR2 x988/9999 @(2,4), REPAIRKIT x1/40 @(3,4), SHIP_INV_TOKEN x3/60 @(4,4), LAND2 x20/9999 @(6,4), ASTEROID1 x120/9999 @(3,0), ALLOY8 x2/20 @(5,4)
+
+  0x20EBF18D520  grid 7x3  miCapacity 19  store 7/8 used/alloc
+    history 0/8  mask popcount 19  tail past size: 0 of 1 not element-shaped
+    F_HYPERDRIVE x120/120 @(0,0), UP_FRHYP4#69095 x-1/100 @(1,1), F_HDRIVEBOOST1 x-1/100 @(1,0), UP_FRFUE4#35147 x-1/100 @(3,2), F_SCANNER x-1/100 @(6,0), UP_FRCOM4#97724 x-1/100 @(3,1), F_TELEPORT x-1/100 @(6,2)
+
+  0x20EBF18DE40  grid 10x6  miCapacity 50  store 11/16 used/alloc
+    history 0/16  mask popcount 50  tail past size: 4 of 5 not element-shaped
+    TECH_COMP x9/80 @(0,0), BLUE2 x300/9999 @(1,0), TRA_MINERALS3 x2/100 @(2,0), ALLOY7 x10/20 @(3,0), ALLOY1 x6/20 @(4,0), ALLOY4 x4/20 @(5,0), GRAVBALL x6/20 @(6,0), BUI_SCRAP x243/9999 @(7,0), REACTION2 x4/20 @(8,0), ALBUMENPEARL x8/20 @(9,0), ASTEROID2 x45/9999 @(0,1)
+
+  0x20EBF18E088  grid 10x6  miCapacity 50  store 2/2 used/alloc
+    history 0/2  mask popcount 50  tail past size: 0 of 0 not element-shaped
+    FUEL1 x391/9999 @(0,0), FUEL1 x125/9999 @(1,0)
+
+  0x20EBF18E2D0  grid 10x6  miCapacity 50  store 1/1 used/alloc
+    history 0/1  mask popcount 50  tail past size: 0 of 0 not element-shaped
+    FUEL1 x171/9999 @(1,0)
+
+  0x20EBF18E9A8  grid 10x6  miCapacity 50  store 16/16 used/alloc
+    history 0/16  mask popcount 50  tail past size: 0 of 0 not element-shaped
+    ASTEROID2 x8060/9999 @(0,0), ASTEROID2 x9999/9999 @(1,0), TRA_ALLOY5 x17/100 @(2,0), ASTEROID1 x445/9999 @(3,0), ROBOT1 x804/9999 @(4,0), ALLOY6 x20/20 @(5,0), EX_BLUE x992/9999 @(6,0), ALBUMENPEARL x18/20 @(7,0), BLUE2 x1168/9999 @(8,0), LAND2 x504/9999 @(9,0), TRA_EXOTICS5 x3/100 @(0,1), EXP_CURIO1 x4/20 @(1,1), STELLAR2 x317/9999 @(2,1), MIRROR x4/40 @(3,1), ALLOY6 x8/20 @(4,1), TRA_MINERALS3 x2/100 @(5,1)
+
+  0x20EBF190BE0  grid 10x16  miCapacity 160  store 11/16 used/alloc
+    history 0/16  mask popcount 160  tail past size: 4 of 5 not element-shaped
+    B_SHL_D x1/500 @(0,0), B_SHL_B x2/500 @(1,0), B_WNG_J x1/500 @(2,0), B_CON_8 x2/500 @(3,0), B_CON2_2 x2/500 @(4,0), B_WNG_G x1/500 @(5,0), B_MAG_1X1 x2/500 @(6,0), B_CON2_1 x2/500 @(7,0), B_TRU_C x1/500 @(8,0), B_WNG_F x1/500 @(9,0), B_STR_I_NE x1/500 @(0,1)
+
+  0x20EBF191E30  grid 10x3  miCapacity 28  store 2/2 used/alloc
+    history 0/2  mask popcount 36  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x20EBF192078  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x20EBF1922C0  grid 10x3  miCapacity 30  store 2/2 used/alloc
+    history 0/2  mask popcount 40  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_LASER x200/200 @(1,0)
+
+  0x20EBF192508  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x20EBF192750  grid 10x3  miCapacity 26  store 2/2 used/alloc
+    history 0/2  mask popcount 34  tail past size: 0 of 0 not element-shaped
+    VEHICLE_ENGINE x300/300 @(0,0), VEHICLE_BOOST x-1/100 @(1,0)
+
+  0x20EBF192998  grid 10x3  miCapacity 28  store 1/1 used/alloc
+    history 0/1  mask popcount 36  tail past size: 0 of 0 not element-shaped
+    SUB_ENGINE x0/400 @(0,0)
+
+  0x20EBF192BE0  grid 10x3  miCapacity 28  store 3/4 used/alloc
+    history 0/4  mask popcount 36  tail past size: 0 of 1 not element-shaped
+    MECH_ENGINE x300/300 @(0,0), MECH_BOOST x-1/100 @(1,0), MECH_PROT x-1/100 @(2,0)
+
+  0x20EBF193070  grid 7x5  miCapacity 30  store 20/32 used/alloc
+    history 0/32  mask popcount 30  tail past size: 0 of 12 not element-shaped
+    SHIPSLOT_DMG1 x1/100 @(3,0), SHIPSLOT_DMG2 x1/100 @(4,0), SHIPSLOT_DMG2 x1/100 @(6,0), SHIPSLOT_DMG3 x1/100 @(2,1), SHIPSLOT_DMG3 x1/100 @(3,1), SHIPSLOT_DMG4 x1/100 @(5,1), SHIPSLOT_DMG4 x1/100 @(1,2), SHIPSLOT_DMG5 x1/100 @(2,2), SHIPSLOT_DMG5 x1/100 @(3,2), SHIPSLOT_DMG5 x1/100 @(4,2), SHIPSLOT_DMG5 x1/100 @(5,2), SHIPSLOT_DMG6 x1/100 @(2,3), SHIPSLOT_DMG7 x1/100 @(3,3), SHIPSLOT_DMG7 x1/100 @(5,3), SHIPSLOT_DMG7 x1/100 @(6,3), SHIPSLOT_DMG8 x1/100 @(1,4), SHIPSLOT_DMG8 x1/100 @(2,4), SHIPSLOT_DMG9 x1/100 @(4,4), SHIPSLOT_DMG9 x1/100 @(5,4), SHIPSLOT_DMG9 x1/100 @(6,4)
+
+  0x20EBF1932B8  grid 10x5  miCapacity 40  store 31/32 used/alloc
+    history 0/32  mask popcount 40  tail past size: 0 of 1 not element-shaped
+    BP_SALVAGE x30/30 @(0,0), LAUNCHSUB x375/9999 @(4,1), ACCESS1 x1/1 @(2,2), ROCKETSUB x486/9999 @(7,1), GEODE_SPACE x4/50 @(2,1), LAUNCHFUEL x3/40 @(0,2), LAND1 x2070/9999 @(8,0), RADIO1 x9778/9999 @(1,0), PLANT_POOP x20/9999 @(3,2), MICROCHIP x3/20 @(5,1), RED2 x235/9999 @(0,1), BP_SALVAGE x7/30 @(2,0), ROBOT2 x301/9999 @(7,0), HYPERFUEL2 x2/20 @(6,0), DRONE_SALVAGE x10/10 @(3,0), FUEL1 x125/9999 @(3,1), FUEL2 x640/9999 @(1,1), DRONE_SALVAGE x10/10 @(5,0), OXYGEN x11/9999 @(7,2), SHIPCHARGE x4/100 @(8,1), PROC_PLNT#12559 x1/1 @(8,2), CAVECUBE x4/10 @(9,2), TRA_ALLOY5 x4/50 @(1,3), REACTION1 x2/10 @(2,3), EX_RED x387/9999 @(3,3), SACVENOM x6/10 @(4,3), SAND1 x1167/9999 @(6,3), FUEL1 x967/9999 @(4,4), CHART_ROBOT x3/40 @(7,3), PROC_LUMP#21314 x1/1 @(8,3), DRONE_SALVAGE x6/10 @(4,0)
+
+  0x20EBF1964F8  grid 10x3  miCapacity 29  store 8/8 used/alloc
+    history 0/8  mask popcount 29  tail past size: 0 of 0 not element-shaped
+    LAUNCHER_ROBO x194/200 @(0,0), SHIPJUMP_ROBO x200/200 @(1,0), SHIPSHIELD_ROBO x200/200 @(3,0), LIFESUP_ROBO x-1/100 @(4,0), SHIPROCKETS x-1/100 @(6,0), HYPERDRIVE_ROBO x0/120 @(2,0), SHIPGUN_ROBO x-1/100 @(7,0), UP_HYP1#17546 x-1/100 @(9,0)
+
+  0x20EBF196740  grid 7x3  miCapacity 18  store 17/32 used/alloc
+    history 0/32  mask popcount 18  tail past size: 0 of 15 not element-shaped
+    SHIPJUMP1 x172/200 @(0,0), LAUNCHER x188/200 @(1,0), HYPERDRIVE x0/120 @(2,0), SHIPSHIELD x200/200 @(3,0), SOLAR_SAIL x-1/100 @(4,0), SHIPGUN1 x-1/100 @(5,0), UP_S_SHLX#98659 x-1/100 @(6,0), SHIPSLOT_DMG3 x1/100 @(2,1), SHIPSLOT_DMG3 x1/100 @(3,1), SHIPSLOT_DMG4 x1/100 @(5,1), SHIPSLOT_DMG4 x1/100 @(6,1), SHIPSLOT_DMG4 x1/100 @(1,2), SHIPSLOT_DMG5 x1/100 @(2,2), SHIPSLOT_DMG5 x1/100 @(3,2), SHIPSLOT_DMG5 x1/100 @(4,2), SHIPSLOT_DMG5 x1/100 @(5,2), SHIPSLOT_DMG6 x1/100 @(6,2)
+
+  0x20EBF196988  grid 10x3  miCapacity 27  store 27/32 used/alloc
+    history 0/32  mask popcount 27  tail past size: 0 of 5 not element-shaped
+    LIFESUP_ROBO x-1/100 @(1,0), HYPERDRIVE_ROBO x116/120 @(6,0), SHIPSHIELD_ROBO x200/200 @(4,0), UP_S_SHL4#23052 x-1/100 @(5,0), UP_S_SHLX#35025 x-1/100 @(5,2), SHIPJUMP_ROBO x192/200 @(2,1), LAUNCHER_ROBO x200/200 @(0,1), UT_LAUNCHER x-1/100 @(0,2), UT_LAUNCHCHARGE x50/100 @(1,1), WATER_LANDER x-1/100 @(1,2), SHIPGUN_ROBO x-1/100 @(8,0), UP_SGUN3#21149 x-1/100 @(8,1), SHIP_TELEPORT x-1/100 @(0,0), SHIPROCKETS x-1/100 @(3,0), UP_SGUNX#77897 x-1/100 @(7,1), UP_HYPX#64390 x-1/100 @(5,1), UP_S_SHLX#95616 x-1/100 @(4,1), UP_SGUNX#52498 x-1/100 @(9,1), UP_S_SHLX#90179 x-1/100 @(3,1), UP_S_SHL4#47066 x-1/100 @(4,2), UP_HYP4#30154 x-1/100 @(6,1), UP_HYP3#33419 x-1/100 @(6,2), UP_HYP3#41459 x-1/100 @(7,2), UP_PULSE4#04067 x-1/100 @(2,0), UP_S_SHL4#63636 x-1/100 @(3,2), UP_HYP4#37656 x-1/100 @(7,0), UP_PULSE3#28468 x-1/100 @(2,2)
+
+  0x20EBF433070  grid 8x3  miCapacity 24  store 24/32 used/alloc
+    history 0/32  mask popcount 24  tail past size: 0 of 8 not element-shaped
+    SCANBINOC1 x-1/100 @(1,0), UT_MINER x-1/100 @(5,2), UP_LASER3#05206 x-1/100 @(4,2), BOLT x100/200 @(6,1), UP_TGRENX#53207 x-1/100 @(2,0), UP_TGRENX#67171 x-1/100 @(2,1), UP_SENGUN#64289 x-1/100 @(5,0), UP_SENGUN#26372 x-1/100 @(4,0), LASER x159/200 @(3,2), UP_LASERX#98952 x-1/100 @(2,2), UP_LASER1#95575 x-1/100 @(1,2), SCAN1 x-1/100 @(0,1), UP_LASER2#03913 x-1/100 @(3,1), UP_BOLT4#85042 x-1/100 @(6,0), UP_BOLT3#37093 x-1/100 @(7,0), UP_SCAN2#00834 x-1/100 @(0,2), TERRAINEDITOR x290/600 @(7,2), UP_LASER4#69032 x-1/100 @(3,0), UP_SENGUN#04431 x-1/100 @(7,1), UP_SENGUN#91039 x-1/100 @(5,1), STRONGLASER x-1/100 @(4,1), UP_SCANX#63057 x-1/100 @(1,1), UP_SCAN4#95727 x-1/100 @(0,0), UP_SENGUN#01407 x-1/100 @(6,2)
+
+  0x20EBF433390  grid 10x6  miCapacity 27  store 18/32 used/alloc
+    history 0/32  mask popcount 27  tail past size: 0 of 14 not element-shaped
+    SCAN1 x-1/100 @(0,0), SCANBINOC1 x-1/100 @(2,0), SENT_LASER x200/200 @(3,0), UP_SCAN0#77939 x-1/100 @(4,0), UT_SURVEY x-1/100 @(5,0), WEAPSENT_DMG4 x1/100 @(6,0), WEAPSENT_DMG1 x1/100 @(7,0), WEAPSENT_DMG2 x1/100 @(9,0), WEAPSENT_DMG3 x1/100 @(2,1), WEAPSENT_DMG4 x1/100 @(5,1), WEAPSENT_DMG1 x1/100 @(7,1), WEAPSENT_DMG2 x1/100 @(8,1), WEAPSENT_DMG3 x1/100 @(0,2), WEAPSENT_DMG4 x1/100 @(1,2), WEAPSENT_DMG1 x1/100 @(3,2), WEAPSENT_DMG2 x1/100 @(4,2), WEAPSENT_DMG3 x1/100 @(6,2), WEAPSENT_DMG4 x1/100 @(9,2)
+
+  why the rest were not inventories:
+    handle unreadable      0
+    count out of range     2
+    slot array unreadable  11996
+    a slot was malformed   11
+    every slot was empty   2
+
+  27 objects held a fully-parsing slot array with items
+
+  THE THREE THINGS THIS RUN IS TESTING
+    1. size(+0x0C) is the element count, not capacity(+0x08):
+       0 of 27 had to fall back to capacity, and 4 of 27 had a tail
+       past size that is NOT element-shaped. A high tail figure and a
+       low fallback figure together confirm it.
+    2. the ownership mask at -0x80: 27 of 27 readable, 17 of those had
+       popcount == miCapacity with no bits above 15.
+    3. whether the stores lie on a lattice -- below.
+
+  FIXED-ARRAY TEST -- do the validated stores lie on a lattice?
+    27 stores, 84 distinct gaps under 256 KB
+    most common gaps:
+      0x248    x13
+      0x490    x8
+      0x4910   x7
+      0x46C8   x7
+      0x4238   x7
+      0x3FF0   x7
+      0xB68    x7
+      0x920    x7
+      0x6D8    x7
+      0x4480   x6
+    stride 0x248: best lattice holds 9 stores from 0x20EBF18C2E0
+    stride 0x490: best lattice holds 5 stores from 0x20EBF18C2E0
+    stride 0x4910: best lattice holds 3 stores from 0x20EBF18D520
+    A stride that collects 28, 12 or 7 stores is sizeof(cGcInventoryStore)
+    and names them by index. One that collects 2 or 3 is a coincidence.
+
+  LATTICE WALK -- every slot at stride 0x248 from 0x20EBF18C2E0, empty ones
+  included. Index is what names an inventory; match the populated ones to
+  the save by contents and the empty ones come free.
+
+   index  address        grid     miCap  mask  size/alloc   contents
+       0  0x020EBF18C2E0 10x12       24    31  20/32        CATALYST1 x1363, AMMO x1732, YELLOW2 x371, FUEL2 x329, FUEL1 x2113, LAND1 x5269, CATALYST2 x48, OXYGEN x588, SAND1 x820, LAUNCHFUEL x3, EX_YELLOW x334, NAV_DATA_DROP x5, LAUNCHSUB x152, ROBOT2 x1307, ROBOT1 x157, ANTIMATTER x3, JELLY x3, SENTINEL_LOOT x1, LAND2 x332, NAV_DATA x1
+       1  0x020EBF18C528 10x6        18    18  17/32        ENERGY x50, UT_ENERGY x50, UP_HAZX#54672 x-1, UP_COLD3#66117 x-1, UP_SHLDX#43821 x-1, PROTECT x80, UP_SHLD3#85621 x-1, UP_SHLDX#89326 x-1, POWERGLOVE x50, SUIT_REFINER x100, UT_TRANSLATE1 x50, UP_SNSUIT#41108 x-1, UP_SNSUIT#65169 x-1, UP_SNSUIT#48610 x-1, UP_JETX#97142 x-1, JET1 x1, UP_JET4#15312 x-1
+       2  0x020EBF18C770 7x5          0     0  0/0          (unused slot)
+       3  0x020EBF18C9B8 8x3         24    24  24/24        SCANBINOC1 x-1, UT_MINER x-1, UP_LASER3#05206 x-1, BOLT x100, UP_TGRENX#53207 x-1, UP_TGRENX#67171 x-1, UP_SENGUN#64289 x-1, UP_SENGUN#26372 x-1, LASER x159, UP_LASERX#98952 x-1, UP_LASER1#95575 x-1, SCAN1 x-1, UP_LASER2#03913 x-1, UP_BOLT4#85042 x-1, UP_BOLT3#37093 x-1, UP_SCAN2#00834 x-1, TERRAINEDITOR x290, UP_LASER4#69032 x-1, UP_SENGUN#04431 x-1, UP_SENGUN#91039 x-1, STRONGLASER x-1, UP_SCANX#63057 x-1, UP_SCAN4#95727 x-1, UP_SENGUN#01407 x-1
+       4  0x020EBF18CC00 1x1          1     0  0/0          (unused slot)
+       5  0x020EBF18CE48 1x1          1     0  0/0          (unused slot)
+       6  0x020EBF18D090 1x1          1     0  0/0          (unused slot)
+       7  0x020EBF18D2D8 7x5         33    33  33/85        ROCKETSUB x229, MEGAPROD1 x1, RADIO1 x9999, ASTEROID3 x982, BUI_SCRAP x243, STATION_KEY x1, WALKER_PROD x1, ALLOY5 x9, ROBOT2 x987, HYDRALIC x2, TRA_MINERALS2 x8, SHIPCHARGE x9, LUSH1 x386, FUEL2 x98, POWERCELL x3, LAND3 x761, FRIGATE_FUEL_3 x1, QUAD_PROD x1, CAVE2 x57, PLANT_HOT x200, FARMPROD3 x2, CREATURE1 x12, RED2 x150, LAUNCHSUB2 x150, ALLOY3 x10, TRA_COMPONENT5 x5, ROBOT1 x187, STELLAR2 x988, REPAIRKIT x1, SHIP_INV_TOKEN x3, LAND2 x20, ASTEROID1 x120, ALLOY8 x2
+       8  0x020EBF18D520 7x3         19    19  7/8          F_HYPERDRIVE x120, UP_FRHYP4#69095 x-1, F_HDRIVEBOOST1 x-1, UP_FRFUE4#35147 x-1, F_SCANNER x-1, UP_FRCOM4#97724 x-1, F_TELEPORT x-1
+       9  0x020EBF18D768 7x5          0     0  0/0          (unused slot)
+      10  0x020EBF18D9B0 1x1          1     0  0/0          (unused slot)
+      11  0x020EBF18DBF8 1x1          1     0  0/0          (unused slot)
+      12  0x020EBF18DE40 10x6        50    50  11/16        TECH_COMP x9, BLUE2 x300, TRA_MINERALS3 x2, ALLOY7 x10, ALLOY1 x6, ALLOY4 x4, GRAVBALL x6, BUI_SCRAP x243, REACTION2 x4, ALBUMENPEARL x8, ASTEROID2 x45
+      13  0x020EBF18E088 10x6        50    50  2/2          FUEL1 x391, FUEL1 x125
+      14  0x020EBF18E2D0 10x6        50    50  1/1          FUEL1 x171
+      15  0x020EBF18E518 10x6        50    50  0/0          (empty)
+      16  0x020EBF18E760 10x6        50    50  0/0          (empty)
+      17  0x020EBF18E9A8 10x6        50    50  16/16        ASTEROID2 x8060, ASTEROID2 x9999, TRA_ALLOY5 x17, ASTEROID1 x445, ROBOT1 x804, ALLOY6 x20, EX_BLUE x992, ALBUMENPEARL x18, BLUE2 x1168, LAND2 x504, TRA_EXOTICS5 x3, EXP_CURIO1 x4, STELLAR2 x317, MIRROR x4, ALLOY6 x8, TRA_MINERALS3 x2
+      18  0x020EBF18EBF0 10x6        50    50  0/0          (empty)
+      19  0x020EBF18EE38 10x6        50    50  0/0          (empty)
+      20  0x020EBF18F080 10x6        50    50  0/0          (empty)
+      21  0x020EBF18F2C8 10x6        50    50  0/0          (empty)
+      22  0x020EBF18F510 10x6        48    48  0/0          (empty)
+      23  0x020EBF18F758 10x6        48    48  0/0          (empty)
+      24  0x020EBF18F9A0 1x1          1     0  0/0          (unused slot)
+      25  0x020EBF18FBE8 1x1          1     0  0/0          (unused slot)
+      26  0x020EBF18FE30 10x6        50    50  0/0          (empty)
+      27  0x020EBF190078 7x3         21    21  0/0          (empty)
+      28  0x020EBF1902C0 8x4         32    32  0/0          (empty)
+      29  0x020EBF190508 10x6        60    60  0/0          (empty)
+      30  0x020EBF190750 1x1          1     1  0/0          (empty)
+      31  0x020EBF190998 1x1          1     1  0/0          (empty)
+      32  0x020EBF190BE0 10x16      160   160  11/16        B_SHL_D x1, B_SHL_B x2, B_WNG_J x1, B_CON_8 x2, B_CON2_2 x2, B_WNG_G x1, B_MAG_1X1 x2, B_CON2_1 x2, B_TRU_C x1, B_WNG_F x1, B_STR_I_NE x1
+      33  0x020EBF190E28 0x0          0    48  0/0          (empty)
+      34  0x020EBF191070 0x0          0    38  0/0          (empty)
+      35  0x020EBF1912B8 0x0          0    61  0/0          (empty)
+      36  0x020EBF191500 0x0          0    38  0/0          (empty)
+      37  0x020EBF191748 0x0          0    38  0/0          (empty)
+      38  0x020EBF191990 0x0          0    49  0/0          (empty)
+      39  0x020EBF191BD8 0x0          0    49  0/0          (empty)
+      40  0x020EBF191E20 0x0          0    37  0/0          (empty)
+      41  0x020EBF192068 0x0          0    35  0/0          (empty)
+      42  0x020EBF1922B0 0x0          0    41  0/0          (empty)
+      43  0x020EBF1924F8 0x0          0    35  0/0          (empty)
+      44  0x020EBF192740 0x0          0    35  0/0          (empty)
+      45  0x020EBF192988 0x0          0    37  0/0          (empty)
+      46  0x020EBF192BD0 0x0          0    37  0/0          (empty)
+      47  0x020EBF192E18 0x0          0    41  0/0          (empty)
+      48  0x020EBF193060 0x0          0    31  0/0          (empty)
+      49  0x020EBF1932A8 0x0          0    41  0/0          (empty)
+      50  0x020EBF1934F0 0x0          0     1  0/0          (empty)
+      51  0x020EBF193738 0x0          0     1  0/0          (empty)
+      52  0x020EBF193980 0x0          0     1  0/0          (empty)
+      53  0x020EBF193BC8 0x0          0     1  0/0          (empty)
+      54  0x020EBF193E10 0x0          0     1  0/0          (empty)
+      55  0x020EBF194058 0x0          0     1  0/0          (empty)
+      56  0x020EBF1942A0 0x0          0     1  0/0          (empty)
+      57  0x020EBF1944E8 0x0          0     1  0/0          (empty)
+      58  0x020EBF194730 0x0          0     1  0/0          (empty)
+      59  0x020EBF194978 0x0          0     1  0/0          (empty)
+      60  0x020EBF194BC0 0x0          0     1  0/0          (empty)
+      61  0x020EBF194E08 0x0          0     1  0/0          (empty)
+      62  0x020EBF195050 0x0          0     1  0/0          (empty)
+      63  0x020EBF195298 0x0          0     1  0/0          (empty)
+      64  0x020EBF1954E0 0x0          0     1  0/0          (empty)
+      65  0x020EBF195728 0x0          0     1  0/0          (empty)
+      66  0x020EBF195970 0x0          0     1  0/0          (empty)
+      67  0x020EBF195BB8 0x0          0     1  0/0          (empty)
+      68  0x020EBF195E00 0x0          0     1  0/0          (empty)
+      69  0x020EBF196048 0x0          0     1  0/0          (empty)
+      70  0x020EBF196290 0x0          0     1  0/0          (empty)
+      71  0x020EBF1964D8 0x0          0    30  0/0          (empty)
+      72  0x020EBF196720 0x0          0    25  0/0          (empty)
+      73  0x020EBF196968 0x0          0    34  0/0          (empty)
+      74  0x020EBF196BB0 0x0          0     7  0/0          (empty)
+      75  0x020EBF196DF8 0x0          0     1  0/0          (empty)
+      76  0x020EBF197040 0x0          0     1  0/0          (empty)
+      77  0x020EBF197288 0x0          0     1  0/0          (empty)
+      78  0x020EBF1974D0 0x0          0     1  0/0          (empty)
+      79  0x020EBF197718 0x0          0     1  0/0          (empty)
+
+    80 slots walked. An index with a grid and a mask
+    but no contents is an inventory the player owns and has
+    not filled; one with neither is past the end of the array.
+
+PHASE P -- skipped: phase L already found live inventories.
+----------------------------------------------------------------
+
+PHASE 1 -- containers by their own signature
+----------------------------------------------------------------
+
+  scanned 6830.7 MB, 600953 positions passed the cheap filter,
+  0 containers reported, 21 regions faulted
+  why the rest were rejected:
+    width                      626
+    height                     58
+    version                    13
+    class/stackGroup           421431
+    isCool                     33
+    name not a string256       175298
+    slots handle               3473
+    other handles              21
+
+VERDICT: LIVE INVENTORIES FOUND (27)
+----------------------------------------------------------------
+  Objects in the runtime layout, each with a slot array in which every
+  declared slot parses. Beware duplicates: the same stack has been seen
+  at eight addresses (live state, save-document copies, UI buffers), so
+  a WRITE must establish which copy the game actually reads.
+  probe took 159781 ms

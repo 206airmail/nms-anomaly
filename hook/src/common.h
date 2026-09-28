@@ -54,6 +54,10 @@ struct Config {
     // Keep the game running when its window loses focus. Changes how the game
     // behaves rather than only observing it, so it is off unless asked for.
     bool noPauseOnFocusLoss = false;
+    // Resolve the game's root singleton and expose player state to plugins.
+    // On by default, unlike the probes: it is one linear scan of .text at
+    // startup (tens of ms), it never writes to the game, and it patches no
+    // code -- and it is the foundation everything else in the API stands on.
 };
 extern Config g_config;
 
