@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anomaly"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "indexmap 2.14.2",
  "roxmltree",

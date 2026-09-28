@@ -1,6 +1,6 @@
 {
   "name": "anomaly",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "No Man's Sky mod manager",
   "type": "module",
   "scripts": {
