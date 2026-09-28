@@ -535,17 +535,64 @@ pub fn reconcile(loadout: &mut Loadout, mods_dir: &Path, dry_run: bool) -> Chang
     changes
 }
 
-/// True when what is deployed looks like it came from `source`.
+/// One file, as cheaply as two copies of it can be told apart: where it sits,
+/// how big it is, and when it was last written.
 ///
-/// Compares the set of relative paths. That is enough to catch the case this
-/// exists for -- the user switched a mod between its original and cleaned
-/// builds, which differ by whole files -- without hashing every asset on every
-/// reconcile.
+/// Deploying makes a hardlink, and a hardlink *is* the file -- same size, same
+/// modified time, necessarily. The copy `deploy::link_or_copy` falls back to
+/// when a link is refused carries both across as well, because Windows copies
+/// a file's timestamps with its bytes. So a correctly deployed name matches
+/// its source on all three without hashing anything, while a build rewritten
+/// under the same name does not.
+type Stamp = (PathBuf, u64, Option<std::time::SystemTime>);
+
+fn stamped_files(root: &Path, prefix: &Path, out: &mut BTreeSet<Stamp>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = prefix.join(entry.file_name());
+        if path.is_dir() {
+            stamped_files(&path, &rel, out);
+        } else {
+            let (len, at) = match entry.metadata() {
+                Ok(data) => (data.len(), data.modified().ok()),
+                Err(_) => (0, None),
+            };
+            out.insert((rel, len, at));
+        }
+    }
+}
+
+/// True when what is deployed came from `source` *as it stands now*.
 ///
-/// It has to compare like with like: the readmes and build scripts under
+/// ---------------------------------------------------------------------------
+/// Why the names are not enough
+/// ---------------------------------------------------------------------------
+///
+/// This compared the set of relative paths. That catches the case it was
+/// written for -- the user switched a mod between its original and cleaned
+/// builds, which differ by whole files -- and misses one that costs just as
+/// much: a build **rewritten in place**.
+///
+/// Changing a value is exactly that. The edited copy is rebuilt into the same
+/// `derived/<owner>__edited` folder, under the same file names, every time a
+/// value changes. So the folder path was unchanged, which satisfied the
+/// `built_from` check; the names were unchanged, which satisfied this one; and
+/// reconcile reported `unchanged` and relinked nothing. The *first* edit to a
+/// mod reached the game and every edit after it was dropped in silence --
+/// which is the one failure this program exists to prevent, the screen saying
+/// a value is set while the game goes on loading the old one.
+///
+/// Size and modified time settle it, and they cost nothing: the walk is
+/// already reading each directory entry, and both come off the entry's own
+/// metadata.
+///
+/// It still compares like with like: the readmes and build scripts under
 /// `source` are never deployed, and neither is anything in `skip`, so
 /// expecting them in the mods folder would make every mod look wrong and
-/// relink the entire library on every reconcile.
+/// relink the whole library on every reconcile.
 fn deployed_from(
     mods_dir: &Path,
     deployed: &[String],
@@ -555,17 +602,26 @@ fn deployed_from(
     if !source.is_dir() {
         return false;
     }
+    // Both sides are rooted at the *deployed* folder name -- a staged mod's
+    // top level holds the folders it puts in the game -- so the two sets are
+    // directly comparable.
     let mut want = BTreeSet::new();
-    relative_files(source, Path::new(""), &mut want);
-    want.retain(|rel| deploy::is_game_content(rel) && !skip.contains(&rel.display().to_string()));
+    stamped_files(source, Path::new(""), &mut want);
+    want.retain(|(rel, _, _)| {
+        deploy::is_game_content(rel) && !skip.contains(&rel.display().to_string())
+    });
 
     let mut have = BTreeSet::new();
     for name in deployed {
         let at = mods_dir.join(name);
         if at.is_dir() {
-            relative_files(&at, Path::new(name), &mut have);
+            stamped_files(&at, Path::new(name), &mut have);
         } else if at.is_file() {
-            have.insert(PathBuf::from(name));
+            let (len, when) = match std::fs::metadata(&at) {
+                Ok(data) => (data.len(), data.modified().ok()),
+                Err(_) => (0, None),
+            };
+            have.insert((PathBuf::from(name), len, when));
         }
     }
     want == have
@@ -853,6 +909,55 @@ mod tests {
         assert!(gone.contains(&"Merge One".to_string()));
         assert!(gone.contains(&"Merge Two".to_string()));
         assert_eq!(loadout.wanted().keys().collect::<Vec<_>>(), vec!["Mod A"]);
+    }
+
+    #[test]
+    fn a_build_rewritten_in_place_reaches_the_game() {
+        // The shape of an edit: the edited copy is rebuilt into the *same*
+        // folder, under the *same* file names, and only its contents change.
+        //
+        // That made both of reconcile's "already correct" tests agree -- the
+        // folder path had not moved, so `built_from` matched, and no file had
+        // been added or removed, so the names matched -- and it reported
+        // `unchanged`. The first edit to a mod reached the game; every one
+        // after it was dropped without a word, while the screen went on saying
+        // the value was set.
+        let dir = Dir::new("rewritten");
+        dir.file("derived/Cool Mod__edited/Cool Mod/SCENE.MBIN", "TransY 0.0");
+        let mods = dir.0.join("MODS");
+        std::fs::create_dir_all(&mods).unwrap();
+        let built = dir.0.join("derived/Cool Mod__edited");
+
+        let mut loadout = Loadout::default();
+        loadout.put(entry("Cool Mod", &built.display().to_string(), Variant::Original));
+        assert_eq!(reconcile(&mut loadout, &mods, false).deployed, vec!["Cool Mod"]);
+        assert_eq!(
+            std::fs::read_to_string(mods.join("Cool Mod/SCENE.MBIN")).unwrap(),
+            "TransY 0.0"
+        );
+
+        // Edit again. Same folder, same name, new contents -- and the file is
+        // replaced rather than written through, exactly as a rebuild does it,
+        // because writing through a hardlink would rewrite the deployed copy
+        // too and hide the very thing being tested.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let asset = built.join("Cool Mod/SCENE.MBIN");
+        std::fs::remove_file(&asset).unwrap();
+        std::fs::write(&asset, "TransY 24.280840").unwrap();
+
+        let after = reconcile(&mut loadout, &mods, false);
+        assert_eq!(after.deployed, vec!["Cool Mod"], "the rebuild has to be relinked");
+        assert_eq!(
+            std::fs::read_to_string(mods.join("Cool Mod/SCENE.MBIN")).unwrap(),
+            "TransY 24.280840",
+            "the game was left reading the build before the edit"
+        );
+
+        // And it settles: a third reconcile with nothing changed must not
+        // churn the mods folder.
+        let settled = reconcile(&mut loadout, &mods, false);
+        assert_eq!(settled.unchanged, vec!["Cool Mod"]);
+        assert!(settled.deployed.is_empty());
     }
 
     #[test]
