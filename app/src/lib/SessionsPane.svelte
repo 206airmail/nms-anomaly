@@ -294,11 +294,30 @@
       {/if}
     {:else if !hook.installed || !hook.ours}
       <p class="lede">
-        No Man's Sky writes almost nothing to its own log. A small file beside the
-        game — <code>{hook.path ?? "xinput9_1_0.dll"}</code> — records which mod
-        files the game actually loads, what it complains about, and where it
-        crashes. It is read-only: it watches, and it can be removed at any time.
+        No Man's Sky writes almost nothing to its own log. Two small files beside
+        the game record which mod files it actually loads, what it complains
+        about, and where it crashes — <code>{hook.path ?? "xinput9_1_0.dll"}</code>,
+        which is the part the game loads, and a recorder plugin it loads in turn.
+        They are read-only: they watch, and they can be removed at any time.
       </p>
+      {#if hook.legacy}
+        <p class="hint">
+          An earlier version of the recorder is installed — a single file, from
+          before it was split into a host and a plugin. Installing again replaces
+          it with both halves, and nothing of yours is lost.
+        </p>
+      {:else if hook.host_installed && !hook.plugin_installed}
+        <p class="warn">
+          Only half of it is there: the part the game loads is installed, but the
+          recorder plugin beside it is missing, so nothing is being written down.
+          Installing again puts both in place.
+        </p>
+      {:else if hook.plugin_installed && !hook.host_installed}
+        <p class="warn">
+          The recorder plugin is there, but the part the game loads is not, so
+          nothing will ever open it. Installing again puts both in place.
+        </p>
+      {/if}
       {#if hook.foreign}
         <p class="warn">
           {hook.foreign}. Installing ours keeps a copy of theirs, and removing

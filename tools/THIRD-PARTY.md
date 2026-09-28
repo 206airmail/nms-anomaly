@@ -86,15 +86,33 @@ and upstream's is half a megabyte smaller.
 - Source: <https://github.com/TsudaKageyu/minhook>
 - Author: Tsuda Kageyu and contributors
 - Licence: **BSD 2-Clause**
-- Shipped as: part of `tools/nmslogger/xinput9_1_0.dll`, statically linked.
+- Shipped as: part of `tools/atlas/anomaly_recorder.dll`, statically linked.
   Vendored source in `hook/third_party/minhook/`, unmodified, licence text at
   `hook/third_party/minhook/LICENSE.txt`.
 
-`tools/nmslogger/xinput9_1_0.dll` is **our own** code (`hook/`), built with
-MinHook inside it. It is the recorder described in `docs/session-recording.md`:
-the user installs it beside `NMS.exe` themselves, from the Sessions tab, and can
-remove it there. MinHook is what lets it observe the game's file opens; the rest
-of the DLL is in this repository.
+`tools/atlas/anomaly_recorder.dll` is **our own** code
+(`plugins/anomaly_recorder/`), built with MinHook inside it. It is the recorder
+described in `docs/session-recording.md`: the user installs it themselves, from
+the Sessions tab, and can remove it there. MinHook is what lets it observe the
+game's file opens; the rest of the DLL is in this repository.
+
+## Atlas, the plugin host
+
+- Source: <https://github.com/206airmail/nms-atlas>
+- Author: ours
+- Licence: **MIT**
+- Shipped as: `tools/atlas/xinput9_1_0.dll`
+
+Atlas is the file the game actually loads, and it loads the recorder above as a
+plugin. It is a **separate project** rather than part of this repository,
+because it is meant to be usable by people who do not use Anomaly at all — so
+it is listed here alongside genuine third-party components even though we write
+it.
+
+It contains no third-party code: it patches nothing in the game and therefore
+needs no detour library. Only one file can be named `xinput9_1_0.dll`, which is
+the only name the game will load, which is why the recorder had to become a
+plugin rather than keep a DLL of its own.
 
 ## Substituting your own build
 

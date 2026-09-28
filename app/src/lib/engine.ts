@@ -1422,16 +1422,26 @@ export function humanBytes(n: number): string {
 // Recording what the game says while it runs
 // ---------------------------------------------------------------------------
 
-/** What the recorder's DLL is doing in the game's own folder. */
+/**
+ * What the recorder is doing in the game's own folder.
+ *
+ * It is TWO files. The game loads Atlas — a standalone plugin host, its own
+ * project — and the recording itself is an Atlas plugin. Only one file can be
+ * called `xinput9_1_0.dll`, which is the only name the game will load, so the
+ * recorder could not stay a DLL of its own once Atlas existed.
+ */
 export interface HookState {
-  /** where it goes: beside NMS.exe */
+  /** where the host goes: beside NMS.exe */
   path: string | null;
-  /** our copy, the one an install would write */
+  /** our copy of the host, the one an install would write */
   source: string | null;
+  /** where the recorder plugin goes, under the host's folder */
+  plugin_path: string | null;
+  /** **both halves** are in place. Not just the host. */
   installed: boolean;
-  /** true when what is installed is ours */
+  /** true when whatever occupies the slot is ours */
   ours: boolean;
-  /** true when it is the build this program ships */
+  /** true when both halves are the build this program ships */
   up_to_date: boolean;
   /** set when another tool owns the same slot */
   foreign: string | null;
@@ -1441,6 +1451,12 @@ export interface HookState {
   out_dir: string | null;
   /** why installing or removing cannot happen right now */
   blocked: string | null;
+  /** the host alone, so a message can say which half is missing */
+  host_installed: boolean;
+  /** the plugin alone */
+  plugin_installed: boolean;
+  /** the slot holds the single-DLL recorder from before the split */
+  legacy: boolean;
 }
 
 export interface EventCounts {

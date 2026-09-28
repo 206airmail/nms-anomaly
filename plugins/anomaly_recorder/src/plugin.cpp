@@ -81,6 +81,18 @@ DWORD WINAPI LateThread(LPVOID) {
 
 extern "C" {
 
+// Lets the Anomaly host recognise this file as its own recorder, and say which
+// version it is looking at.
+//
+// This has to be an EXPORT, not just a constant. As a proxy DLL the marker
+// reached the binary through the version export in proxy.cpp; a plugin has no
+// proxy.cpp, so with nothing referencing the macro the compiler dropped the
+// string entirely and the host could not identify its own recorder. A
+// dllexport cannot be optimised away.
+__declspec(dllexport) const char* AnomalyRecorderVersion() {
+    return NMSLOG_MARKER " " RECORDER_VERSION;
+}
+
 __declspec(dllexport) int32_t AtlasPluginStart(const AtlasApi* api) {
     if (!api) return 1;
     g_api = api;

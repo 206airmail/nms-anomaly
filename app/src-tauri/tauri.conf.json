@@ -38,7 +38,8 @@
       "../../tools/MBINCompiler.exe": "tools/MBINCompiler.exe",
       "../../tools/hgpaktool.exe": "tools/hgpaktool.exe",
       "../../tools/THIRD-PARTY.md": "tools/THIRD-PARTY.md",
-      "../../tools/nmslogger/xinput9_1_0.dll": "tools/nmslogger/xinput9_1_0.dll",
+      "../../tools/atlas/xinput9_1_0.dll": "tools/atlas/xinput9_1_0.dll",
+      "../../tools/atlas/anomaly_recorder.dll": "tools/atlas/anomaly_recorder.dll",
       "../../tools/sevenzip/7z.exe": "tools/sevenzip/7z.exe",
       "../../tools/sevenzip/7z.dll": "tools/sevenzip/7z.dll",
       "../../tools/sevenzip/License.txt": "tools/sevenzip/License.txt"

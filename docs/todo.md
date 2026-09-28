@@ -59,10 +59,42 @@ scan is only needed if the signature itself ever stops matching.
 2. `nopause.cpp` becomes its own plugin -- it is already the right shape (one
    behaviour, one flag, touches no game code). Still in `hook/` for now.
 3. `metaprobe.cpp` stays a research tool; it is not a plugin. See above.
-4. Anomaly learns to install Atlas and to list/enable/disable plugins. **This
-   is the remaining user-visible work.** Note the host currently recognises its
-   recorder by a marker string in the proxy DLL; it must now look for the
-   plugin in `<game>\Binaries\Atlas\plugins\` instead.
+4. ~~Anomaly learns to install Atlas~~ **done 2026-09-28.** `engine/hook.rs`
+   now installs and removes BOTH halves, and "installed" means both -- Atlas
+   alone records nothing while looking exactly like a working install, so one
+   half must not read as one. It recognises three slot owners (Atlas, the
+   pre-split combined DLL, foreign) and upgrades from the old single DLL
+   **without** asking permission, because that file is ours. 18 tests.
+   Still to do: list/enable/disable plugins in the UI.
+
+### How Anomaly gets Atlas: bundle now, offer updates later
+
+Decided 2026-09-28 (Nick). Anomaly ships a reviewed copy of Atlas, and once
+the Atlas repo is public it will additionally **offer** newer releases rather
+than requiring an Anomaly release for every Atlas update.
+
+Why not fetch-only, which was the instinct: Anomaly does not merely install
+Atlas, it ships `anomaly_recorder.dll` **built against a specific
+`ATLAS_API_VERSION`**. Fetching "latest Atlas" could therefore stop the
+recorder loading, and the symptom would be "recording silently stopped". So an
+update check must be gated on an API version the bundled recorder can still
+talk to -- a negotiation, not a download. Bundling also keeps the review
+posture Anomaly already has for MBINCompiler, hgpaktool and 7-Zip: executable
+code that goes into the user's game process is pinned and recorded in
+`tools/THIRD-PARTY.md`.
+
+Deferred until Atlas is public (nothing can be fetched from a private repo):
+
+- Atlas publishes release metadata carrying its version, its
+  `ATLAS_API_VERSION` and a checksum.
+- Anomaly checks the releases API, compares against the installed copy (Atlas
+  exports `AtlasVersion()`, so the installed version is readable), and offers
+  an upgrade only when the API version is one the recorder supports.
+- Never install silently.
+
+The urgency is lower than it looks: Atlas re-derives the global by signature
+rather than a fixed address, and warns on an image-stamp mismatch instead of
+reading garbage, so a game patch degrades loudly.
 
 A backup of the old combined hook sits at
 `<game>\Binaries\xinput9_1_0.anomaly.dll` if a fallback is ever needed.
