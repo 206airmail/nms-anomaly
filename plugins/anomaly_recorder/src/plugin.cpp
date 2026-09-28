@@ -32,6 +32,10 @@
 // refused on every launch would be worse than useless.
 ATLAS_DECLARE_PLUGIN_API_VERSION
 
+ATLAS_DECLARE_PLUGIN_INFO(
+    "Anomaly Recorder", "1.0.0", "206airmail",
+    "records a session for the Anomaly mod manager")
+
 thread_local bool t_inHook = false;
 Config g_config;
 std::wstring g_gameBinDir;
