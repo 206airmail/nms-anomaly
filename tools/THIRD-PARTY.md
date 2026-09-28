@@ -1,6 +1,6 @@
-# Third-party code bundled with nmscheck
+# Third-party code bundled with Anomaly
 
-nmscheck ships two binaries it did not write, and one it builds itself from a
+Anomaly ships two binaries it did not write, and one it builds itself from a
 vendored library. The two binaries are run as **separate processes** — nothing
 here links against them — and both can be replaced by the user with their own
 copy (see "Substituting your own build" below).
@@ -57,7 +57,7 @@ of the DLL is in this repository.
 
 ## Substituting your own build
 
-Neither binary is required, and neither is hidden. nmscheck looks for them in
+Neither binary is required, and neither is hidden. Anomaly looks for them in
 this order, and the first hit wins:
 
 1. `NMS_MBINCOMPILER` / `NMS_HGPAKTOOL` / `NMSCHECK_HOOK_DLL` — set any of them

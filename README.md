@@ -7,6 +7,24 @@ and keeps copies of your save. See [app/README.md](app/README.md).
 `nmscheck.py`, described below, is the original Python conflict engine. It is
 kept as a cross-check against the Rust port and is not where features go.
 
+## Install
+
+Download the installer from [Releases](../../releases) and run it. Windows only.
+
+The build is **not code-signed**, so SmartScreen will show "Windows protected
+your PC" the first time: choose *More info* -> *Run anyway*. That warning is
+about the absence of a certificate, not about anything the installer does.
+
+Nothing else is required. The tools Anomaly needs to read the game's own files
+-- MBINCompiler, hgpaktool and 7-Zip -- are installed alongside it, and it finds
+No Man's Sky itself. See [tools/THIRD-PARTY.md](tools/THIRD-PARTY.md) for what
+those are and their licences.
+
+## Licence
+
+MIT, for Anomaly's own source -- see [LICENSE](LICENSE). The bundled binaries
+keep their own terms; none of them is linked into this program.
+
 ## nmscheck.py — the Python conflict engine
 
 Finds conflicts between unpacked No Man's Sky mods by comparing them
