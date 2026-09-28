@@ -20,12 +20,16 @@ import ModList from "../src/lib/ModList.svelte";
 import ModRecord from "../src/lib/ModRecord.svelte";
 import ValueEditor from "../src/lib/ValueEditor.svelte";
 import LibraryPane from "../src/lib/LibraryPane.svelte";
+import PresetBar from "../src/lib/PresetBar.svelte";
 import LoadOrderMeasured from "../src/lib/LoadOrderMeasured.svelte";
 import UpdatePanel from "../src/lib/UpdatePanel.svelte";
 import UpdateImpactDetail from "../src/lib/UpdateImpactDetail.svelte";
 // The stylesheet as written, for the checks in section 4. `?raw` is Vite's,
 // so no filesystem and no `@types/node` -- the text is bundled in.
 import modListSource from "../src/lib/ModList.svelte?raw";
+// The route as written, for section 8: the branch that decides what `main`
+// draws is not reachable by rendering it. See the note there.
+import pageSource from "../src/routes/+page.svelte?raw";
 import { library, type Row } from "../src/lib/library.svelte";
 import { updates } from "../src/lib/updates.svelte";
 import { sessions } from "../src/lib/sessions.svelte";
@@ -793,6 +797,90 @@ console.log("\n== 7b. every verdict the engine can return reaches the screen =="
   const many = Array.from({ length: 60 }, (_, i) => moved(`T/P${i}`, "1", "2", "1"));
   const capped = text(draw(UpdateImpactDetail, { file: { ...file, reverts: many }, most: 10 }));
   ok("a long list is capped and the rest counted", capped.includes("and 50 more"));
+}
+
+// ---------------------------------------------------------------------------
+// 8. The window survives a scan that does not
+//
+// Asserted against the route's source for the same reason section 4 is: a
+// server render cannot reach it. `failure` is set only by a scan that threw,
+// and a scan is started from `onMount`, which does not run here -- so the one
+// state worth asserting about is the one state this file cannot put the page
+// into. The shape of the branch is the next best thing, and it is the whole
+// of the bug: the failure panel was the *first* arm of `main`'s chain, so it
+// answered for every tab, and a library the app could not read hid Settings,
+// the mods list and the Nexus browser -- which is to say, all three of the
+// places that could have fixed it.
+// ---------------------------------------------------------------------------
+
+console.log("\n== 8. a failed scan takes one tab with it, not the window ==");
+{
+  const main = pageSource.slice(
+    pageSource.indexOf("<main>"),
+    pageSource.indexOf("</main>"),
+  );
+  const at = (needle: string) => main.indexOf(needle);
+  const actions = at('{#if tab === "actions"}');
+  const failed = at("{#if failure}");
+  const library = at('{:else if tab === "library"}');
+
+  ok("the chain `main` branches on is the tab", actions >= 0);
+  ok("a failed scan is not what it branches on first", failed > actions);
+  ok(
+    "the failure is drawn inside the tab it is about",
+    failed > actions && library > failed,
+  );
+  for (const tab of ["library", "sessions", "settings"]) {
+    ok(
+      `the ${tab} tab keeps an arm of its own`,
+      main.includes(`{:else if tab === "${tab}"}`),
+    );
+  }
+
+  // The other half of the same bug: `live` is false after a failure too, and
+  // the nav swapped the rescan button for the fixture toggle -- retiring the
+  // one control that could have retried the scan at the moment it was needed.
+  ok(
+    "and the rescan button survives the failure as well",
+    /\{#if live \|\| failure\}/.test(pageSource),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 9. An empty library can still be given one
+//
+// The preset bar was wrapped whole in `managedCount > 0`, which is right for
+// the selector -- a preset says nothing about a library with no mods in it --
+// and wrong for the button beside it, because that button is the only way into
+// the sheet that imports somebody else's list. A list is *most* use on an
+// empty library: it names every mod in their set and links each page, and on an
+// empty library that is the whole list. The one state it was written for was
+// the one state it could not be reached from.
+// ---------------------------------------------------------------------------
+
+console.log("\n== 9. a list can be imported into a library with nothing in it ==");
+{
+  const bare = draw(PresetBar, {
+    onCount: 0,
+    managedCount: 0,
+    onChanged: () => {},
+  });
+
+  ok("the way into the lists sheet is there with nothing installed", bare.includes("Lists"));
+  ok(
+    "and the selector is not, because it would have nothing to offer",
+    !bare.includes("Switch to a saved preset"),
+  );
+  ok("the bar says why it is empty rather than going blank", text(bare).includes("nothing installed"));
+
+  // The other half: it must not have cost the ordinary case anything.
+  const stocked = draw(PresetBar, {
+    onCount: 12,
+    managedCount: 40,
+    onChanged: () => {},
+  });
+  ok("a stocked library still gets the selector", stocked.includes("Switch to a saved preset"));
+  ok("and the same way in", stocked.includes("Lists"));
 }
 
 // Thrown rather than `process.exit`, the same way `actions.check.ts` does it:

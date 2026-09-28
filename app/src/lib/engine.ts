@@ -1070,6 +1070,48 @@ export async function collectionImport(
   });
 }
 
+/**
+ * The presets that were imported from a list and can be opened again.
+ *
+ * Empty outside Tauri, and empty on a failure: this is what puts an "Open"
+ * on a preset row, and a preset with no list behind it is the ordinary case
+ * rather than an error worth a message.
+ */
+export async function collectionSaved(): Promise<string[]> {
+  if (!inTauri()) return [];
+  try {
+    return await invoke<string[]>("collection_saved");
+  } catch {
+    return [];
+  }
+}
+
+/** The list one preset was imported from, to plan again as things stand now. */
+export async function collectionReopen(preset: string): Promise<Collection | null> {
+  if (!inTauri()) return null;
+  return await invoke<Collection | null>("collection_reopen", { preset });
+}
+
+/**
+ * The version this build was stamped with, from the bundle itself.
+ *
+ * Asked rather than written down. The status bar carried the number as a
+ * literal, so it read "Anomaly 0.1.0" over a 1.0.0 build the moment the
+ * version was bumped anywhere else -- three files agreeing and the one thing
+ * the user can actually see disagreeing with all of them.
+ *
+ * Null outside Tauri, where there is no bundle to ask.
+ */
+export async function appVersion(): Promise<string | null> {
+  if (!inTauri()) return null;
+  try {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return await getVersion();
+  } catch {
+    return null;
+  }
+}
+
 /** One mod another manager deployed, and whether we can take it over. */
 export interface Candidate {
   owner: string;

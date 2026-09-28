@@ -44,6 +44,8 @@
     collectionOpen,
     collectionPlan,
     collectionImport,
+    collectionSaved,
+    collectionReopen,
     openModPage,
     type Presets,
     type PresetSwitch,
@@ -58,11 +60,29 @@
     onCount: number;
     /** how many are managed at all: with none, a preset can say nothing */
     managedCount: number;
+    /**
+     * Set to open the lists sheet from outside this bar, and cleared here.
+     *
+     * Deliberately not the request *counter* `browser.requestId` uses. That
+     * shape works when the asker and the asked are both already on screen, and
+     * this one is not: the click that asks also switches to the Library tab,
+     * which is where this bar is *mounted from scratch*. A freshly mounted
+     * component has no previous count to compare against -- take the current
+     * one as already served and it never opens, take zero and it reopens every
+     * time the user comes back to the tab.
+     *
+     * So the request is consumed instead of counted. [`onListsOpened`] puts it
+     * back to false the moment the sheet is up, which reads the same whether
+     * this bar was mounted before the asking or because of it.
+     */
+    openLists?: boolean;
+    /** told that [`openLists`] has been acted on, so the asker can clear it */
+    onListsOpened?: () => void;
     /** the library changed on disk, so everything holding a copy should reread */
     onChanged: () => void;
   }
 
-  let { onCount, managedCount, onChanged }: Props = $props();
+  let { onCount, managedCount, openLists = false, onListsOpened, onChanged }: Props = $props();
 
   let presets = $state<Presets>({ presets: [], active: null });
   let busy = $state(false);
@@ -71,6 +91,16 @@
   /** The rarer verbs — saving, sharing, deleting — live behind one button. */
   let managing = $state(false);
   let newName = $state("");
+
+  // Opened from elsewhere. Reading `openLists` and writing `managing` are
+  // different pieces of state, and the read is cleared by the asker, so this
+  // settles after one run rather than retriggering itself.
+  $effect(() => {
+    if (openLists) {
+      managing = true;
+      onListsOpened?.();
+    }
+  });
 
   let preview = $state<{ name: string; result: PresetSwitch } | null>(null);
 
@@ -135,6 +165,9 @@
     try {
       const back = await presetDelete(name);
       if (back) presets = back;
+      // The list it came from went with it, so the rows that offer to open one
+      // have to be reread or a dead button stays on screen.
+      await loadSaved();
     } catch (e) {
       failed = String(e);
     } finally {
@@ -166,7 +199,59 @@
   // whichever of those the receiving library can answer.
 
   let sharing = $state(false);
-  let incoming = $state<{ list: Collection; plan: CollectionPlan; as: string } | null>(null);
+  /**
+   * The list on screen, and whether it is already imported.
+   *
+   * `kept` is what stops this being a one-shot. The sheet used to close the
+   * instant the preset was saved, which meant the only screen carrying the
+   * Nexus page of every mod you do not have went away the moment you said yes
+   * to the list -- and getting it back meant opening the file again. It is now
+   * a heading change: the same sheet, still re-planning itself as mods arrive,
+   * with the verb spent.
+   */
+  let incoming = $state<{
+    list: Collection;
+    plan: CollectionPlan;
+    as: string;
+    kept: boolean;
+  } | null>(null);
+
+  /** Presets that came from a list, so their row can offer to open it again. */
+  let reopenable = $state<string[]>([]);
+
+  async function loadSaved() {
+    reopenable = await collectionSaved();
+  }
+
+  void loadSaved();
+
+  /**
+   * Show the list a preset was imported from, planned against the library as
+   * it stands now.
+   *
+   * The plan is recomputed rather than remembered: the whole reason to come
+   * back is that mods have been installed since, and "you do not have these"
+   * has to have shrunk.
+   */
+  async function reopen(preset: string) {
+    busy = true;
+    failed = null;
+    try {
+      const list = await collectionReopen(preset);
+      if (!list) {
+        failed = `the list behind "${preset}" is no longer saved -- import the file again`;
+        return;
+      }
+      const plan = await collectionPlan(list);
+      if (!plan) return;
+      incoming = { list, plan, as: preset, kept: true };
+      managing = false;
+    } catch (e) {
+      failed = String(e);
+    } finally {
+      busy = false;
+    }
+  }
 
   /** Turn a name into something safe to suggest as a file name. */
   function fileNameFor(name: string): string {
@@ -219,7 +304,7 @@
       if (!list) return;
       const plan = await collectionPlan(list);
       if (!plan) return;
-      incoming = { list, plan, as: plan.name };
+      incoming = { list, plan, as: plan.name, kept: false };
     } catch (e) {
       failed = String(e);
     } finally {
@@ -276,7 +361,13 @@
     try {
       const back = await collectionImport(incoming.list, incoming.as);
       if (back) presets = back;
-      incoming = null;
+      // Deliberately still open. The preset is saved; what is on screen is the
+      // part a preset cannot hold -- which mods are still missing and where
+      // their pages are -- and that is the part you are about to spend an hour
+      // working through. Closing it here is what made the list a thing you had
+      // to import again for every mod after the first.
+      incoming.kept = true;
+      await loadSaved();
     } catch (e) {
       failed = String(e);
     } finally {
@@ -299,9 +390,22 @@
   }
 </script>
 
-{#if managedCount > 0}
-  <div class="bar">
-    <span class="hud-label">Preset</span>
+<!-- The bar is always here. `managedCount > 0` used to wrap the whole of it,
+     which hid the *selector* -- reasonable, there is nothing to switch between
+     -- and took "Lists…" with it, which is the only door to the sheet below and
+     therefore the only way to import somebody else's list.
+
+     That is exactly backwards. A list arriving from another player is most
+     useful when you have nothing: it names the mods, links each one's Nexus
+     page and tells you what you are missing, which on an empty library is the
+     entire list. The one state where importing matters most was the one state
+     where it could not be reached.
+
+     So the selector keeps the guard, because a preset really can say nothing
+     about a library with no mods in it, and the verb loses it. -->
+<div class="bar">
+  <span class="hud-label">Preset</span>
+  {#if managedCount > 0}
     <select
       aria-label="Switch to a saved preset"
       value={presets.active ?? ""}
@@ -315,10 +419,12 @@
         <option value={preset.name}>{preset.name}</option>
       {/each}
     </select>
-    <button class="btn-link" onclick={() => (managing = true)}>Lists…</button>
-  </div>
-  {#if failed}<p class="failed">{failed}</p>{/if}
-{/if}
+  {:else}
+    <span class="hint">nothing installed to switch</span>
+  {/if}
+  <button class="btn-link" onclick={() => (managing = true)}>Lists…</button>
+</div>
+{#if failed}<p class="failed">{failed}</p>{/if}
 
 <!-- The rare verbs. Behind a button rather than on the bar, for the same
      reason selecting several mods is a mode: saving, sharing and deleting a
@@ -331,18 +437,23 @@
       &mdash; the files stay staged, so coming back costs only a relink.
     </p>
 
-    <h4>Save what is on now ({onCount})</h4>
-    <div class="make">
-      <input
-        type="text"
-        placeholder="Name this set of mods…"
-        bind:value={newName}
-        onkeydown={(e) => e.key === "Enter" && saveCurrent()}
-      />
-      <Button variant="primary" onclick={saveCurrent} disabled={busy || !newName.trim()}>
-        Save
-      </Button>
-    </div>
+    <!-- Nothing installed means nothing to name, so the box is not offered.
+         The import below it is, and on an empty library it is the only thing
+         on this sheet worth doing. -->
+    {#if managedCount > 0}
+      <h4>Save what is on now ({onCount})</h4>
+      <div class="make">
+        <input
+          type="text"
+          placeholder="Name this set of mods…"
+          bind:value={newName}
+          onkeydown={(e) => e.key === "Enter" && saveCurrent()}
+        />
+        <Button variant="primary" onclick={saveCurrent} disabled={busy || !newName.trim()}>
+          Save
+        </Button>
+      </div>
+    {/if}
 
     {#if presets.presets.length}
       <h4>Saved</h4>
@@ -362,6 +473,19 @@
           >
             Switch to
           </Button>
+          {#if reopenable.includes(preset.name)}
+            <!-- Only for a preset that came from someone's list, because only
+                 then is there a list to open. It is how you get back to the
+                 Nexus page of each mod you are still missing without hunting
+                 down the file you imported. -->
+            <Button
+              onclick={() => void reopen(preset.name)}
+              disabled={busy}
+              title="What is on this list, and which of it you are still missing"
+            >
+              Open list
+            </Button>
+          {/if}
           <Button
             onclick={() => share(preset.name)}
             disabled={busy || sharing}
@@ -481,20 +605,38 @@
       </ul>
     {/if}
 
-    <h4>Save it as</h4>
-    <div class="make">
-      <input type="text" bind:value={incoming.as} placeholder="Name this list…" />
-    </div>
+    {#if incoming.kept}
+      <p class="ok">
+        Saved as the preset <b>{incoming.as}</b>, and kept &mdash; reopen it from
+        <b>Lists…</b> whenever you want the next page. This stays open and
+        rechecks itself as each mod arrives, so you can work down the list
+        without importing the file again.
+      </p>
+      <p class="hint">
+        Saving again refreshes the preset with the mods you have installed
+        since. It is worth doing once you are done: a preset names your own
+        folders, so a mod that was missing at import is not on it yet.
+      </p>
+    {:else}
+      <h4>Save it as</h4>
+      <div class="make">
+        <input type="text" bind:value={incoming.as} placeholder="Name this list…" />
+      </div>
+    {/if}
 
     {#snippet verbs()}
-      <Button onclick={() => (incoming = null)}>Cancel</Button>
+      <!-- "Done" rather than "Cancel" once it is saved: there is nothing left
+           to cancel, and the sheet is now a reference rather than a decision. -->
+      <Button onclick={() => (incoming = null)}>
+        {incoming?.kept ? "Done" : "Cancel"}
+      </Button>
       <Button
         variant="primary"
         onclick={keepIncoming}
         busy={busy}
         disabled={!incoming?.as.trim()}
       >
-        Save as preset
+        {incoming?.kept ? "Save again" : "Save as preset"}
       </Button>
     {/snippet}
   </Sheet>

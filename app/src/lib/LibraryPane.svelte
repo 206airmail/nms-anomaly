@@ -100,6 +100,11 @@
      * counter changes every time even when the name does not.
      */
     wanted?: { owner: string; at: number } | null;
+
+    /** set to open the mod-lists sheet; forwarded to [`PresetBar`], which
+     *  clears it through `onListsOpened` once the sheet is up */
+    openLists?: boolean;
+    onListsOpened?: () => void;
   }
 
   let {
@@ -114,6 +119,8 @@
     drift = [],
     onevidence,
     wanted = null,
+    openLists = false,
+    onListsOpened,
   }: Props = $props();
 
   /** The mod being read. One selection, and a click is all it takes. */
@@ -460,18 +467,29 @@
 
   async function pickArchive() {
     actionError = null;
-    const file = await open({
-      multiple: false,
-      filters: [{ name: "Mod archive", extensions: ["zip", "rar", "7z"] }],
-    });
-    if (typeof file !== "string") return;
-    planFor = file;
-    plan = null;
+    // The picker is inside the `try` as well. It was outside it, so a dialog
+    // that refused to open rejected into nothing at all -- the button would
+    // have looked broken rather than failed, which is the one outcome this
+    // pane must never produce.
     try {
+      const file = await open({
+        multiple: false,
+        filters: [{ name: "Mod archive", extensions: ["zip", "rar", "7z"] }],
+      });
+      if (typeof file !== "string") return;
+      planFor = file;
+      plan = null;
       plan = await installPreview(file, modsDir);
+      if (!plan) {
+        // Only reachable outside Tauri, where the engine cannot be called.
+        // Still said, rather than leaving the pane blank after a pick.
+        planFor = null;
+        actionError = "the engine is not available, so nothing can be installed here";
+      }
     } catch (err) {
       actionError = String(err);
       planFor = null;
+      plan = null;
     }
   }
 
@@ -488,8 +506,12 @@
     try {
       await installs.fromFile(archive, modsDir, gameRoot, replacing);
       await settle();
-    } catch {
-      // The queue holds the reason and the strip shows it.
+    } catch (err) {
+      // Said here as well as in the strip along the bottom of the window.
+      // The strip is a few pixels high and the install was started from this
+      // pane, with the eye on this pane -- a failure reported only down there
+      // reads as the button having done nothing at all.
+      actionError = String(err);
     } finally {
       installing = false;
     }
@@ -546,7 +568,7 @@
         adding={installing}
       >
         {#snippet header()}
-          <PresetBar {onCount} {managedCount} onChanged={settle} />
+          <PresetBar {onCount} {managedCount} {openLists} {onListsOpened} onChanged={settle} />
         {/snippet}
       </ModList>
 
@@ -588,9 +610,14 @@
               <p class="warn">{note}</p>
             {/each}
             {#if plan.collides}
+              <!-- Not "a folder called X": this is true of a mod the loadout
+                   records even when its folder is gone from the game, and that
+                   is the case worth being right about -- it is exactly when
+                   the user would go looking in the mods folder and find
+                   nothing there. -->
               <p class="warn">
-                A folder called {plan.owner} is already installed. Installing will
-                replace it.
+                {plan.owner} is already installed. Installing will replace it,
+                including anything the new version no longer ships.
               </p>
             {/if}
             <div class="verbs">

@@ -30,6 +30,7 @@
     findInstall,
     findInstalls,
     mergeConflict,
+    appVersion,
     settingsRead,
     settingsResolve,
     launchGame,
@@ -97,10 +98,68 @@
     if (said) noticeTimer = setTimeout(() => (changed = null), NOTICE_MS);
   }
 
+  /**
+   * Nothing, in the shape of a report.
+   *
+   * Stood in for by the fixture until the scan lands, which is right in a
+   * browser and wrong after a failed scan: the screens that do not depend on
+   * the scan stay open now, and every one of them would have been drawing the
+   * fixture's twelve conflicts over a library the app could not read.
+   */
+  const NOTHING: Report = {
+    roots: [],
+    winner_rule: "last",
+    reference_version: null,
+    stats: {
+      mods: 0,
+      files: 0,
+      targets: 0,
+      exml: 0,
+      mbin: 0,
+      dds: 0,
+      lua: 0,
+      decompiled: 0,
+      parse_errors: 0,
+      error_details: [],
+    },
+    actionable_count: 0,
+    merged_count: 0,
+    real_load_order: false,
+    manager: null,
+    disable_all: false,
+    disabled: [],
+    unregistered: [],
+    mods: [],
+    conflicts: [],
+    broken: [],
+    drift: [],
+    tools: {
+      mbincompiler: null,
+      hgpaktool: null,
+      scene_check: false,
+      scene_check_note: null,
+    },
+    stale: [],
+    loc_clashes: [],
+  };
+
   const report = $derived(
-    (scanned ?? ((sample ? demo : fixture) as unknown)) as Report,
+    (scanned ??
+      (failure ? NOTHING : ((sample ? demo : fixture) as unknown))) as Report,
   );
   const live = $derived(scanned !== null);
+
+  /** What the bundle says it is, for the status bar. See [`appVersion`]. */
+  let version = $state("");
+  void appVersion().then((said) => {
+    if (said) version = said;
+  });
+
+  /** One figure in the Last scan readout: a count, a wait, or no answer. */
+  function tally(count: number): string {
+    if (failure) return "—";
+    return checking ? "…" : String(count);
+  }
 
   // The clean comparison decompiles every whole-file override against the
   // game's own copy, so it is slower than the scan and lands after it.
@@ -282,6 +341,22 @@
 
   /** Which half of the Library pane is showing. See its `mode` prop. */
   let libraryMode = $state<"installed" | "find">("installed");
+
+  /**
+   * Asks the Library to open its mod-lists sheet, where importing lives.
+   *
+   * The sheet belongs to [`PresetBar`], which sits in the list's header, which
+   * is a snippet inside [`LibraryPane`] -- so a request is passed down rather
+   * than the state being hoisted up. It is cleared once acted on, because this
+   * click also *mounts* the pane it is aimed at; see the prop's own note.
+   */
+  let listsWanted = $state(false);
+
+  function openLists() {
+    tab = "library";
+    libraryMode = "installed";
+    listsWanted = true;
+  }
 
   const NAV: { id: Tab; name: string }[] = [
     { id: "actions", name: "Actions" },
@@ -809,7 +884,11 @@
 
       <div class="spacer"></div>
 
-      {#if live}
+      <!-- `failure` as well as `live`: a scan that threw leaves `scanned` null,
+           which used to swap this for the fixture toggle — so the one control
+           that could have recovered from a wrong mods folder turned into
+           "Sample conflicts" at exactly the moment it was needed. -->
+      {#if live || failure}
         <button class="btn scan" onclick={() => scan()} disabled={scanning}>
           {#if scanning}<span class="spin" aria-hidden="true"></span>{/if}
           {scanning ? "Scanning…" : "Rescan library"}
@@ -824,14 +903,18 @@
       <section class="readoutcard">
         <header class="hud-label">Last scan</header>
         <!-- Held together with the list: these are the same pass, and a
-             readout that updates a row at a time is the thing being fixed. -->
+             readout that updates a row at a time is the thing being fixed.
+
+             A failed scan reads "—" rather than a number. Zero is an answer
+             here — an empty mods folder genuinely scans to four zeroes — and a
+             run that could not get that far has no business borrowing it. -->
         <dl>
-          <div><dt>Mods</dt><dd class="path">{checking ? "…" : report.stats.mods}</dd></div>
-          <div><dt>Assets</dt><dd class="path">{checking ? "…" : report.stats.targets}</dd></div>
-          <div><dt>Files</dt><dd class="path">{checking ? "…" : report.stats.files}</dd></div>
+          <div><dt>Mods</dt><dd class="path">{tally(report.stats.mods)}</dd></div>
+          <div><dt>Assets</dt><dd class="path">{tally(report.stats.targets)}</dd></div>
+          <div><dt>Files</dt><dd class="path">{tally(report.stats.files)}</dd></div>
           <div>
             <dt>Overweight</dt>
-            <dd class="path">{checking ? "…" : tidy.length}</dd>
+            <dd class="path">{tally(tidy.length)}</dd>
           </div>
         </dl>
       </section>
@@ -845,17 +928,38 @@
         </div>
       {/if}
 
-      {#if failure}
+      {#if tab === "actions"}
         <div class="pane">
-          <section class="panel">
-            <header class="hud-label">Scan failed</header>
-            <h2>Could not scan.</h2>
-            <p class="lede">{failure}</p>
-          </section>
-        </div>
-      {:else if tab === "actions"}
-        <div class="pane">
-          {#if checking}
+          {#if failure}
+            <!-- Inside the tab, not instead of the window.
+
+                 A failed scan used to replace `main` entirely, so every tab
+                 drew "Could not scan" and none of them drew itself. That made
+                 the failure unrecoverable from inside the app for exactly the
+                 cases it reports: the mods folder is wrong (Settings), the
+                 game was not found (Settings), there is nothing installed yet
+                 (Library › Find). Each fix was one click away and behind the
+                 message telling you it was needed.
+
+                 A scan is one tab's subject. The other three read the mods
+                 folder, the session log and the settings file, and not one of
+                 them needs this answer to draw. -->
+            <section class="panel hero">
+              <header class="hud-label">Scan failed</header>
+              <h2>Could not scan.</h2>
+              <p class="failed">{failure}</p>
+              <p class="hint">
+                Nothing else is blocked: <b>Settings</b> holds the game and mods
+                folder, and <b>Library</b> still lists what is installed.
+              </p>
+              <div class="retry">
+                <Button variant="primary" busy={scanning} onclick={() => scan()}>
+                  {scanning ? "Scanning…" : "Try again"}
+                </Button>
+                <Button onclick={() => (tab = "settings")}>Open Settings</Button>
+              </div>
+            </section>
+          {:else if checking}
             <!-- The whole tab, while a pass is in flight. See `checking`: the
                  alternative is a list that rewrites itself as the slower half
                  of the pass lands, which is worse than a list that is late. -->
@@ -883,6 +987,53 @@
                   </li>
                 {/each}
               </ol>
+            </section>
+          {:else if live && !report.mods.length}
+            <!-- A library with nothing in it to analyse. It scans, and it
+                 scans clean; it is only that `verdict` would answer "None."
+                 over "0 mods, 0 game assets checked", which is true, unhelpful,
+                 and indistinguishable from a library that was checked and
+                 found spotless. The two reasons a scan can see nothing want
+                 different next moves, so each says its own. -->
+            <section class="panel hero">
+              <header class="hud-label">Recommended actions</header>
+              {#if report.disabled.length}
+                <h2>Every mod is switched off.</h2>
+                <p class="lede">
+                  {plural(report.disabled.length, "mod is", "mods are")} installed
+                  and none of them is loading, so nothing can be contested. Switch
+                  them back on in the Library.
+                </p>
+              {:else}
+                <h2>No mods installed.</h2>
+                <p class="lede">
+                  Nothing is in the mods folder yet. Find one on Nexus, or open
+                  a list another player sent you &mdash; a list names every mod
+                  in their set and links each page, so an empty library is the
+                  case it is most use in.
+                </p>
+                <p class="hint">
+                  If you do have mods and this is the wrong folder,
+                  <b>Settings</b> is where the game and the mods folder are set.
+                </p>
+              {/if}
+              <div class="retry">
+                <Button
+                  variant="primary"
+                  onclick={() => {
+                    tab = "library";
+                    libraryMode = report.disabled.length ? "installed" : "find";
+                  }}
+                >
+                  {report.disabled.length ? "Open Library" : "Find mods"}
+                </Button>
+                <!-- Opens the sheet itself rather than pointing at the button
+                     that opens it. The lists sheet is three components down,
+                     so this asks for it by bumping a counter; see `openLists`
+                     on [`PresetBar`]. -->
+                <Button onclick={openLists}>Import a list…</Button>
+                <Button onclick={() => (tab = "settings")}>Open Settings</Button>
+              </div>
             </section>
           {:else}
             <section class="panel hero">
@@ -1032,6 +1183,8 @@
           gameRoot={chosen?.root}
           visible={tab === "library"}
           bind:mode={libraryMode}
+          openLists={listsWanted}
+          onListsOpened={() => (listsWanted = false)}
           {actions}
           {run}
           {conflicts}
@@ -1076,7 +1229,7 @@
 
   <footer class="status">
     <span class="path" title={libraryPath}>{libraryPath}</span>
-    <span class="hud-label">Anomaly 0.1.0</span>
+    <span class="hud-label">Anomaly {version}</span>
   </footer>
 </div>
 
@@ -1417,6 +1570,16 @@
     font-weight: 700;
     letter-spacing: -0.025em;
     line-height: 1.15;
+  }
+
+  /* The way out of a hero that has no list under it: a failed scan, or a
+     library with nothing in it. Both say what happened and then hand over the
+     one or two screens that can change it. */
+  .retry {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 1rem;
   }
 
   h2 {
