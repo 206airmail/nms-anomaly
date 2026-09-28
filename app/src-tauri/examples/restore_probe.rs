@@ -15,7 +15,7 @@ fn main() {
     let derived = args
         .next()
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"D:\nmscheck_staging\derived"));
+        .unwrap_or_else(|| PathBuf::from(r"D:\NMSAnomaly\derived"));
     let mods = gamefind::find_install()
         .map(|i| i.mods_dir)
         .expect("no No Man's Sky install found");

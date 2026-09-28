@@ -205,6 +205,14 @@ derived/<owner>__edited/ the same, carrying your own values   rebuilt at will
 GAMEDATA\MODS            hardlinks to whichever is chosen     what the game loads
 ```
 
+The first three sit together in `NMSAnomaly` at the root of **the game's own
+drive**: `deploy::staging_for` reads the volume off the install that was found
+or set, so a game on `E:` stages to `E:\NMSAnomaly` and nothing anywhere names a
+drive letter. It has to be that volume, because a hardlink cannot cross one, and
+it is outside the game so a Steam verify never sees it. Staging and downloads
+can both be pointed elsewhere in Settings, which warns when the choice lands on
+another drive — the links silently become copies, at twice the disk.
+
 Cleaning, mending and editing do not change the mod: they write a *second* build
 and change which one is linked. Undoing is pointing back at the staged copy, so
 there is nothing that can fail to come back. `loadout.json` in the app's data

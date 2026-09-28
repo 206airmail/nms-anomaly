@@ -31,8 +31,13 @@ use serde::Serialize;
 /// On the game's own volume, because the link cannot cross drives. Kept beside
 /// the game rather than inside it so the game never scans it and so a verify
 /// of the game files never sees it.
+///
+/// Named after the program, which is `NMSAnomaly` and not `nmscheck` -- a name
+/// this folder went on carrying after the app stopped using it anywhere else.
+/// A folder at the root of someone's games drive has to say what put it there,
+/// and this one was naming a program that no longer exists.
 pub fn staging_for(game_root: &Path) -> PathBuf {
-    // `D:\SteamLibrary\steamapps\common\No Man's Sky` -> `D:\nmscheck_staging`
+    // `D:\SteamLibrary\steamapps\common\No Man's Sky` -> `D:\NMSAnomaly`
     let mut base = game_root.to_path_buf();
     while let Some(parent) = base.parent() {
         if parent.parent().is_none() {
@@ -42,7 +47,7 @@ pub fn staging_for(game_root: &Path) -> PathBuf {
     }
     base.parent()
         .unwrap_or(game_root)
-        .join("nmscheck_staging")
+        .join("NMSAnomaly")
 }
 
 /// What deploying one staged mod put into the game.
@@ -305,12 +310,27 @@ mod tests {
 
     #[test]
     fn staging_sits_on_the_games_own_volume() {
-        // The link cannot cross drives, so this must land on D: for a game on
-        // D:, not in the user profile on C:.
-        let staging = staging_for(Path::new(r"D:\SteamLibrary\steamapps\common\No Man's Sky"));
-        let shown = staging.display().to_string();
-        assert!(shown.starts_with("D:"), "{shown}");
-        assert!(shown.ends_with("nmscheck_staging"), "{shown}");
+        // The link cannot cross drives, so this must land on the game's drive
+        // and not in the user profile on C:.
+        //
+        // Every drive the game could plausibly be on, and two shapes of path:
+        // the volume is read off the install that was found or set, and there
+        // is nothing in here that knows which letter it will be. The D: in the
+        // doc comment above is an example, not a default.
+        for root in [
+            r"D:\SteamLibrary\steamapps\common\No Man's Sky",
+            r"C:\Program Files (x86)\Steam\steamapps\common\No Man's Sky",
+            r"E:\Games\GOG\No Man's Sky",
+            r"Z:\No Man's Sky",
+        ] {
+            let staging = staging_for(Path::new(root));
+            let shown = staging.display().to_string();
+            assert!(
+                shown.starts_with(&root[..2]),
+                "{root} staged to {shown}, off its own volume"
+            );
+            assert!(shown.ends_with("NMSAnomaly"), "{shown}");
+        }
     }
 
     #[test]
