@@ -39,6 +39,8 @@ tools/nms_classes.json
 /nmscc/
 /tests/
 tools/*.py
+# scratch state the write-test tool keeps so --revert can work
+tools/.write_test_state.json
 __pycache__/
 *.pyc
 
