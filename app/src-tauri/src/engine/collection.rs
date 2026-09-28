@@ -215,6 +215,96 @@ pub fn write(list: &Collection, path: &Path) -> Result<(), String> {
     std::fs::write(path, text).map_err(|err| format!("could not save the mod list: {err}"))
 }
 
+/// Every list that has been imported, kept so it can be opened again.
+///
+/// ---------------------------------------------------------------------------
+/// Why the preset is not enough
+/// ---------------------------------------------------------------------------
+///
+/// Importing turns a list into a preset, and a preset is a list of *local
+/// folder names*. That is the right shape for switching mods on and off and
+/// the wrong shape for everything else the list knows: each mod's Nexus page,
+/// its title, the version they were running. Those are exactly the details you
+/// need for the mods you do **not** have yet -- and a preset cannot carry
+/// them, because a mod nobody has installed has no local folder to name.
+///
+/// So the list was shown once, in the sheet the import happened in, and then
+/// dropped. Working through a sixty-mod list means going to Nexus sixty times,
+/// and after the first trip the sheet was gone: the file had to be imported
+/// again from disk to get at the second mod's link. Keeping the list is what
+/// makes an import something you come back to rather than something you do
+/// once.
+///
+/// One file, read and written whole. A list is a few KB and there are a
+/// handful of them, so an index plus a file each would be two things to keep
+/// agreeing about for no gain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Saved {
+    /// the preset this list was imported as, which is the name it is found by
+    pub preset: String,
+    pub list: Collection,
+}
+
+/// Read the imported lists. A missing or damaged store reads as none.
+///
+/// Deliberately not an error. This is a convenience over a preset that has
+/// already been saved, so a store that cannot be read costs the user the
+/// *links* and nothing else -- and failing the screen it is drawn on would
+/// cost them the presets too.
+pub fn saved_all(path: &Path) -> Vec<Saved> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    serde_json::from_str(text).unwrap_or_default()
+}
+
+/// The names of the presets that have a list behind them.
+pub fn saved_names(path: &Path) -> Vec<String> {
+    saved_all(path).into_iter().map(|one| one.preset).collect()
+}
+
+/// One imported list, by the preset it was imported as.
+pub fn saved_get(path: &Path, preset: &str) -> Option<Collection> {
+    saved_all(path)
+        .into_iter()
+        .find(|one| one.preset == preset)
+        .map(|one| one.list)
+}
+
+/// Keep `list` under `preset`, replacing any list already kept under it.
+///
+/// Re-importing is the ordinary way to refresh a preset as the missing mods
+/// arrive, so this replaces rather than accumulates.
+pub fn saved_put(path: &Path, preset: &str, list: &Collection) -> Result<(), String> {
+    let mut all = saved_all(path);
+    all.retain(|one| one.preset != preset);
+    all.push(Saved {
+        preset: preset.to_string(),
+        list: list.clone(),
+    });
+    saved_write(path, &all)
+}
+
+/// Forget the list kept under `preset`, which is what deleting it means.
+pub fn saved_drop(path: &Path, preset: &str) -> Result<(), String> {
+    let mut all = saved_all(path);
+    let before = all.len();
+    all.retain(|one| one.preset != preset);
+    if all.len() == before {
+        return Ok(());
+    }
+    saved_write(path, &all)
+}
+
+fn saved_write(path: &Path, all: &[Saved]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(all).map_err(|err| err.to_string())?;
+    std::fs::write(path, text).map_err(|err| format!("could not save the mod lists: {err}"))
+}
+
 /// How a listed mod was recognised, so the screen can say so rather than
 /// presenting a guess as a fact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -655,6 +745,88 @@ mod tests {
         assert_eq!(made.mods.len(), 1);
         assert_eq!(made.mods[0].owner, "Mystery");
         assert_eq!(made.mods[0].shown(), "Mystery");
+    }
+
+    #[test]
+    fn an_imported_list_is_kept_and_can_be_opened_again() {
+        // The bug this exists for: the list was shown once, in the sheet the
+        // import happened in, and then dropped. Getting at the second mod's
+        // Nexus page meant importing the file again.
+        let dir = std::env::temp_dir().join("anomaly_saved_lists");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("lists.json");
+
+        assert!(saved_all(&path).is_empty(), "nothing kept yet");
+        assert_eq!(saved_get(&path, "Co-op"), None);
+
+        let made = list(vec![listed("Glyphs", "Smooth Glyphs", Some(3071), Some("1.1"))]);
+        saved_put(&path, "Co-op", &made).unwrap();
+
+        assert_eq!(saved_names(&path), vec!["Co-op".to_string()]);
+        assert_eq!(saved_get(&path, "Co-op").unwrap(), made);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn importing_the_same_list_again_replaces_it_rather_than_stacking_up() {
+        // Re-importing is how a preset is refreshed as the missing mods
+        // arrive, so it must not leave two lists under one name.
+        let dir = std::env::temp_dir().join("anomaly_saved_replace");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("lists.json");
+
+        saved_put(&path, "Co-op", &list(vec![listed("A", "A", None, None)])).unwrap();
+        let grown = list(vec![
+            listed("A", "A", None, None),
+            listed("B", "B", None, None),
+        ]);
+        saved_put(&path, "Co-op", &grown).unwrap();
+
+        assert_eq!(saved_all(&path).len(), 1, "one entry, not two");
+        assert_eq!(saved_get(&path, "Co-op").unwrap().mods.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_the_preset_forgets_its_list_and_leaves_the_others() {
+        let dir = std::env::temp_dir().join("anomaly_saved_drop");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("lists.json");
+
+        saved_put(&path, "Co-op", &list(vec![listed("A", "A", None, None)])).unwrap();
+        saved_put(&path, "Visuals", &list(vec![listed("B", "B", None, None)])).unwrap();
+
+        saved_drop(&path, "Co-op").unwrap();
+        assert_eq!(saved_names(&path), vec!["Visuals".to_string()]);
+
+        // Dropping one that was never kept is not an error: a preset saved by
+        // hand has no list behind it, and deleting it is ordinary.
+        saved_drop(&path, "Co-op").unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_store_that_cannot_be_read_costs_the_links_and_nothing_else() {
+        // It is a convenience over presets that are already saved elsewhere,
+        // so a damaged file reads as "no lists kept" rather than failing the
+        // screen it is drawn on -- which would take the presets with it.
+        let dir = std::env::temp_dir().join("anomaly_saved_damaged");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lists.json");
+
+        std::fs::write(&path, "{ this is not json").unwrap();
+        assert!(saved_all(&path).is_empty());
+        assert_eq!(saved_get(&path, "Co-op"), None);
+
+        // And it is repaired by the next import rather than staying broken.
+        saved_put(&path, "Co-op", &list(vec![listed("A", "A", None, None)])).unwrap();
+        assert_eq!(saved_names(&path), vec!["Co-op".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
