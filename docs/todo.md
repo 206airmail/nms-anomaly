@@ -66,14 +66,68 @@ scan is only needed if the signature itself ever stops matching.
 
    Note it had been silently OFF since Atlas took the proxy slot, because it
    lived in the combined DLL.
-3. `metaprobe.cpp` stays a research tool; it is not a plugin. See above.
-4. ~~Anomaly learns to install Atlas~~ **done 2026-09-28.** `engine/hook.rs`
+3. ~~An inventory sorter~~ **done 2026-09-28**, as its own repository:
+   `206airmail/nms-inventory-sorter` (private, MIT). F9 packs an inventory into
+   its owned cells grouped by the game's own item category; F10 undoes it.
+
+   It writes grid positions and nothing else, so the worst a bug in it can do
+   is arrange someone's things badly. It is the first plugin to use Atlas's
+   grouped addressing, so it can sort ships (`ship:*`) as well as the exosuit.
+
+   **Built and its exports verified; NOT yet run in-game.** That needs a human
+   looking at a screen.
+4. `metaprobe.cpp` stays a research tool; it is not a plugin. See above.
+5. ~~Anomaly learns to install Atlas~~ **done 2026-09-28.** `engine/hook.rs`
    now installs and removes BOTH halves, and "installed" means both -- Atlas
    alone records nothing while looking exactly like a working install, so one
    half must not read as one. It recognises three slot owners (Atlas, the
    pre-split combined DLL, foreign) and upgrades from the old single DLL
    **without** asking permission, because that file is ours. 18 tests.
    Still to do: list/enable/disable plugins in the UI.
+
+### The game's transfer range -- the open measurement
+
+Nick, 2026-09-28: the game only lets you move items into a starship (or any
+other remote inventory) when you are close enough, and the distance depends on
+installed technology. A tool acting on live memory has to honour that.
+
+This is the first NMS inventory tool for which the rule is even answerable --
+every existing one edits the save file with the game closed, where "how far is
+the player from the ship" is not a question. So there is no prior art to copy,
+including in `altmank/NoMansSky-Inventory-Manager-Save-Editor`, which has no
+proximity handling of any kind and is right not to.
+
+**Shipped in Atlas 0.6.0, partially.** `GetInventoryReach` returns 1 for the
+four inventories carried on the player, and **-1 (not knowable)** for
+everything else. `MoveElement` refuses a move involving anything not on the
+player unless `AllowRemoteTransfer=1`. The sorter is deliberately exempt:
+rearranging one container is not a transfer.
+
+**Still to measure, when the game is next up** -- the plan is in Atlas's
+`docs/reach.md`. Player position, then target position, then the threshold by
+bisection against the UI. The threshold is the part that must be *observed*
+rather than reasoned about: it is a design decision inside the game, and a
+guessed number would refuse legitimate transfers and look like a bug.
+
+Better still would be reading the game's own decision rather than reproducing
+it, since the UI greys the button out and something must set that. Larger job;
+should not block the bisection.
+
+### A live inventory manager
+
+Nick, 2026-09-28: eventually something like
+`altmank/NoMansSky-Inventory-Manager-Save-Editor` (MIT, source in Downloads),
+but driven by our plugin instead of by reading the save file.
+
+Worth noting what that changes, because it is more than the data source. That
+tool is a *distribution* engine -- bucket rules that drain named sources into
+named stores, a plan the user approves, then a write. Ours would do the same
+against a running game, which means: no decode/encode round trip, no "close the
+game first", edits visible immediately -- and the reach rule above becomes
+load-bearing rather than absent, because every one of those moves is a transfer.
+
+Depends on: the reach measurement, and an Anomaly UI that can talk to a plugin
+(see the hotkeys/settings work below).
 
 ### How Anomaly gets Atlas: bundle now, offer updates later
 

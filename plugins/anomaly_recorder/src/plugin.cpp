@@ -22,6 +22,16 @@
 #include "common.h"
 #include "atlas.h"
 
+// Required from Atlas API version 6.
+//
+// This plugin used to be pinned deliberately to the version 1 header, as a
+// canary: it was the thing that caught a function pointer being inserted into
+// the MIDDLE of AtlasApi, by failing in-game. That job is now done properly by
+// the host, which asks every plugin which header it was built against and
+// refuses one it cannot call safely -- so the canary is redundant, and being
+// refused on every launch would be worse than useless.
+ATLAS_DECLARE_PLUGIN_API_VERSION
+
 thread_local bool t_inHook = false;
 Config g_config;
 std::wstring g_gameBinDir;
