@@ -51,6 +51,7 @@
     type CollectionPlan,
     type How,
   } from "./engine";
+  import { library } from "./library.svelte";
 
   interface Props {
     /** how many mods are switched on now, for the "save this" line */
@@ -226,6 +227,47 @@
     }
   }
 
+  /**
+   * Keep the open list honest as mods arrive.
+   *
+   * Getting the missing mods is a trip to the browser and back, once per mod,
+   * and the sheet stays open across all of it. Without this it would still say
+   * "you do not have these" about mods installed two minutes ago.
+   *
+   * It re-plans rather than crossing items off locally, because "installed" is
+   * a fact about the library and `collection::plan` is the only thing that
+   * decides it -- it matches folder, then page, then title, and never on mod_id
+   * alone. Re-implementing that here would drift from it silently.
+   *
+   * The dependency is the library store, which `scan()` refreshes after every
+   * nxm install, so this fires on its own. `checking` is separate from `busy`
+   * so a background re-plan never disables the buttons under the cursor.
+   */
+  let checking = $state(false);
+
+  async function recheck() {
+    if (!incoming) return;
+    checking = true;
+    try {
+      const fresh = await collectionPlan(incoming.list);
+      if (fresh && incoming) incoming.plan = fresh;
+    } catch {
+      // A failed re-check leaves the previous plan on screen, which is stale
+      // but not wrong -- and the manual button is still there to try again.
+    } finally {
+      checking = false;
+    }
+  }
+
+  $effect(() => {
+    // Read the signals that mean "the library changed" so the effect depends
+    // on them; the plan itself is deliberately not read, or writing it would
+    // schedule the effect again.
+    library.mods.length;
+    library.book.entries.length;
+    if (incoming) void recheck();
+  });
+
   /** Save the imported list as a preset. Switching to it stays a separate act. */
   async function keepIncoming() {
     if (!incoming) return;
@@ -365,9 +407,14 @@
   {@const plan = incoming.plan}
   <Sheet title="“{plan.name}”" onclose={() => (incoming = null)}>
     <p class="hint">
-      {plan.have.length} of {plan.have.length + plan.missing.length} mods on this
-      list are already installed here.
+      <strong>{plan.have.length}</strong> of {plan.have.length + plan.missing.length}
+      mods on this list are installed here.
       {#if plan.exported}Exported {plan.exported}.{/if}
+      <!-- The automatic re-check covers installs this program did. One done by
+           hand, or in another manager, needs asking. -->
+      <Button variant="link" onclick={recheck} disabled={checking}>
+        {checking ? "Checking…" : "Check again"}
+      </Button>
     </p>
     {#if plan.note}<p class="warn">{plan.note}</p>{/if}
 
@@ -384,6 +431,7 @@
       <ul class="gone getlist">
         {#each plan.missing as one (one.owner)}
           <li>
+            <span class="lamp" aria-hidden="true"></span>
             <span>{one.name ?? one.owner}</span>
             {#if one.version}<em>{one.version}</em>{/if}
             {#if one.mod_id}
@@ -405,6 +453,7 @@
       <ul class="getlist">
         {#each plan.have as one (one.owner)}
           <li>
+            <span class="lamp lit" aria-hidden="true"></span>
             <span>{one.name}</span>
             {#if one.differs}
               <em class="differs">
@@ -621,6 +670,26 @@
   .getlist {
     list-style: none;
     padding-left: 0;
+  }
+
+  /* The Library's lamp, duplicated rather than made global -- `.lamp` is a
+     short name and a global one of those has collided with a component's own
+     before. Hollow for "not here yet", filled for "installed", which is the
+     same sense it carries in the mod list: an unlit lamp is a real state, not
+     a missing value. */
+  .lamp {
+    flex: none;
+    width: 0.4375rem;
+    height: 0.4375rem;
+    border: 1px solid var(--faint);
+    border-radius: 50%;
+    background: none;
+  }
+
+  .lamp.lit {
+    border-color: var(--accent);
+    background: var(--accent);
+    box-shadow: 0 0 6px rgba(138, 224, 60, 0.6);
   }
 
   .getlist li {
