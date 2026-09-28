@@ -65,9 +65,10 @@ fn run_analysis(
     let scan = scancache::refresh(&root)
         .map_err(|err| format!("could not read {}: {err}", root.display()))?;
     let (mods, stats, host) = (&scan.mods, scan.stats.clone(), &scan.host);
-    if mods.is_empty() {
-        return Err(format!("no mods found in {}", root.display()));
-    }
+    let roots = vec![std::path::absolute(&root)
+        .unwrap_or_else(|_| root.clone())
+        .to_string_lossy()
+        .into_owned()];
 
     // Only the mods the game has switched on, matching what it will load.
     let mut active: Vec<_> = mods.iter().filter(|m| !m.disabled).cloned().collect();
@@ -76,8 +77,35 @@ fn run_analysis(
         .filter(|m| m.disabled)
         .map(|m| m.name.clone())
         .collect();
+
+    /* A library with nothing to analyse -- an empty MODS folder, or one where
+     * the game has every mod switched off -- used to return `Err`, and the
+     * window then had nothing on it but "Could not scan". Not the Actions tab:
+     * the whole window, Settings and the Nexus browser included, so a fresh
+     * install could not reach the one screen that installs a mod.
+     *
+     * It is not a failure. Nothing is contested because nothing is there,
+     * which is a true and perfectly ordinary answer, and the empty report says
+     * it in the same shape as every other report -- `disabled` still names the
+     * switched-off mods, so "every mod is off" remains readable as a finding
+     * rather than being lost.
+     *
+     * Returned before the tools are located, because each of them costs: the
+     * decompiler is a process, and the vanilla source walks the game's paks.
+     * Neither has anything to compare against here, and the scene check's
+     * "not checked" note would be a warning about work nobody asked for. */
     if active.is_empty() {
-        return Err("every mod in this folder is switched off".into());
+        let mut built = analyze::analyse(
+            Vec::new(),
+            stats,
+            roots,
+            None,
+            WinnerRule::Last,
+            false,
+            Some(host),
+        );
+        built.disabled = disabled;
+        return Ok(report::to_json(&built));
     }
 
     // A clash between two compiled assets can only be reported as "cannot be
@@ -92,14 +120,11 @@ fn run_analysis(
     let mut built = analyze::analyse(
         active.clone(),
         stats,
-        vec![std::path::absolute(&root)
-            .unwrap_or(root)
-            .to_string_lossy()
-            .into_owned()],
+        roots,
         None,
         WinnerRule::Last,
         false,
-        Some(&host),
+        Some(host),
     );
     built.disabled = disabled;
 
@@ -1853,12 +1878,42 @@ fn preset_delete(app: tauri::AppHandle, name: String) -> Result<preset::Presets,
     let mut stored = settings::Settings::read(&path);
     stored.forget_preset(&name);
     stored.write(&path)?;
+    // The list it was imported from goes with it, or deleting a preset would
+    // leave a list behind that nothing can name and nothing can open.
+    if let Ok(lists) = lists_file(&app) {
+        let _ = engine::collection::saved_drop(&lists, &name);
+    }
     Ok(preset::Presets::of(&stored))
 }
 
 // ---------------------------------------------------------------------------
 // Mod lists, to send to another player
 // ---------------------------------------------------------------------------
+
+/// Where imported lists are kept, so one can be opened again without the file.
+///
+/// Beside the loadout rather than inside settings.json. Settings is read on
+/// every start-up and rewritten on every change; a list is sixty entries of
+/// somebody else's library that only this sheet ever looks at, which is the
+/// same reason `edits.json` is a file of its own.
+fn lists_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app_data(app).map(|dir| dir.join("lists.json"))
+}
+
+/// The presets that came from an imported list and can be opened again.
+#[tauri::command]
+fn collection_saved(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    Ok(engine::collection::saved_names(&lists_file(&app)?))
+}
+
+/// The list behind one preset, to plan again against the library as it is now.
+#[tauri::command]
+fn collection_reopen(
+    app: tauri::AppHandle,
+    preset: String,
+) -> Result<Option<engine::collection::Collection>, String> {
+    Ok(engine::collection::saved_get(&lists_file(&app)?, &preset))
+}
 
 /// Everything this library knows about, and the archive each mod came from.
 ///
@@ -2031,14 +2086,24 @@ async fn collection_import(
 ) -> Result<preset::Presets, String> {
     let list = engine::collection::check(list)?;
     let path = settings_file(&app)?;
+    let lists = lists_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let (held, _) = held_library(&app, mods_dir)?;
         let plan = engine::collection::plan(&list, &held);
         let made = plan.preset(name.as_deref().unwrap_or(&plan.name))?;
+        let under = made.name.clone();
 
         let mut stored = settings::Settings::read(&path);
         stored.put_preset(made);
         stored.write(&path)?;
+
+        // And keep the list itself. The preset names local folders, so it
+        // cannot answer "which mods am I still missing, and where are their
+        // pages" -- see `collection::Saved`. Failing to keep it does not fail
+        // the import: the preset is saved either way, and losing the links is
+        // not worth throwing away the thing the user actually asked for.
+        let _ = engine::collection::saved_put(&lists, &under, &list);
+
         Ok(preset::Presets::of(&stored))
     })
     .await
@@ -2799,14 +2864,29 @@ async fn restore_mod(trash: String, mods_dir: Option<String>) -> Result<Vec<Stri
 }
 
 /// What installing an archive would produce, without doing it.
+///
+/// `collides` is widened here to mean what the install actually refuses on.
+/// `archive::preview` can only see the mods folder, so it answers "is there a
+/// folder in the way"; `pipeline::install_from_file` refuses on the *loadout*.
+/// Those come apart -- a mod this program records whose folder another manager
+/// has since purged is installed as far as the loadout knows and absent as far
+/// as the game does -- and when they did, the screen offered "Install it",
+/// sent `overwrite: false`, and the install refused something the user had
+/// never been asked about. Whatever the install would replace, the button has
+/// to say so first.
 #[tauri::command]
 async fn install_preview(
+    app: tauri::AppHandle,
     archive: String,
     mods_dir: Option<String>,
 ) -> Result<engine::archive::Plan, String> {
+    let book_path = loadout_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = mods_root(mods_dir)?;
-        engine::archive::preview(&PathBuf::from(archive), &root)
+        let mut plan = engine::archive::preview(&PathBuf::from(archive), &root)?;
+        let book = loadout::Loadout::read(&book_path);
+        plan.collides = plan.collides || book.get(&plan.owner).is_some();
+        Ok(plan)
     })
     .await
     .map_err(|err| err.to_string())?
@@ -2992,6 +3072,8 @@ pub fn run() {
             collection_open,
             collection_plan,
             collection_import,
+            collection_saved,
+            collection_reopen,
             set_mods_enabled,
             delete_preview,
             delete_mods,
