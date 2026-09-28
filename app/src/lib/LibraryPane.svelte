@@ -377,9 +377,18 @@
     }
   }
 
-  /** Re-price the deletion when the "keep the download" answer changes. */
-  async function repriceDelete(keep: boolean) {
-    withArchive = !keep;
+  /**
+   * Re-price the deletion when the download answer changes.
+   *
+   * The box states the destructive act and starts unchecked, rather than
+   * stating the safe one and starting checked. The default behaviour is the
+   * same either way -- the download is kept -- but "Keep the downloads",
+   * pre-ticked, put the cautious choice behind an action the user had to take,
+   * and a box you untick to delete something reads as permission rather than
+   * as a decision.
+   */
+  async function repriceDelete(alsoDelete: boolean) {
+    withArchive = alsoDelete;
     if (doomed) await priceDelete(pricing);
   }
 
@@ -733,14 +742,14 @@
     <label class="keep">
       <input
         type="checkbox"
-        checked={!withArchive}
+        checked={withArchive}
         onchange={(e) => repriceDelete(e.currentTarget.checked)}
       />
       <span>
-        <strong>Keep the downloads</strong>
+        <strong>Delete the downloads too</strong>
         <em>
-          Reinstalling later costs no bandwidth. Uncheck to reclaim that space
-          too.
+          Off by default: the archives are kept, so reinstalling later costs no
+          bandwidth. Tick this to reclaim that space as well.
         </em>
       </span>
     </label>

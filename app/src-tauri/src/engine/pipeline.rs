@@ -22,8 +22,8 @@ use serde::Serialize;
 use super::model::Conflict;
 use super::model::Mod;
 use super::{
-    archive, decompile, decompile::Decompiler, deploy, discovery, download, loadout, merge,
-    nexus, nxm,
+    archive, decompile, decompile::Decompiler, deploy, discovery, download, erase, loadout,
+    merge, nexus, nxm,
 };
 use super::vanilla::VanillaSource;
 
@@ -204,6 +204,94 @@ fn retire_merges_of(
     gone.into_iter().map(|entry| entry.owner).collect()
 }
 
+/// Add a line about what the previous version left, if anything did.
+///
+/// Said rather than done silently: the user chose to keep downloads when they
+/// delete a mod, and an update quietly removing one would look like that
+/// setting had been ignored.
+fn with_reclaimed(mut notes: Vec<String>, freed: &[String]) -> Vec<String> {
+    if !freed.is_empty() {
+        notes.push(format!(
+            "Removed {} the previous version left behind.",
+            if freed.len() == 1 {
+                "one thing".to_string()
+            } else {
+                format!("{} things", freed.len())
+            }
+        ));
+    }
+    notes
+}
+
+/// What the previous install of a mod left behind.
+///
+/// Captured *before* the loadout record is overwritten, because afterwards
+/// nothing names either of these again.
+#[derive(Debug, Default)]
+struct Previous {
+    /// a cleaned or mended build of the old version
+    build: Option<PathBuf>,
+    /// the archive this install supersedes
+    archive: Option<PathBuf>,
+}
+
+impl Previous {
+    fn of(had: &loadout::Entry) -> Previous {
+        Previous {
+            // Only ever a build of OURS. An `Original` entry's source is the
+            // staged copy, which `archive::install` has already replaced in
+            // place -- deleting that would delete what was just installed.
+            build: (had.variant != loadout::Variant::Original)
+                .then(|| PathBuf::from(&had.source)),
+            archive: had.archive.as_deref().map(PathBuf::from),
+        }
+    }
+}
+
+/// Delete what the previous version left, now that nothing points at it.
+///
+/// `dissolve_merges_of` only retires entries whose variant is `Merged`, so a
+/// **cleaned or mended build of the mod being updated** used to be orphaned:
+/// the record was overwritten to point at the fresh staged copy and the old
+/// build stayed in `derived/` with nothing left that knew it was there.
+/// Measured on a real 66-mod library: 16 of 30 derived folders were orphans.
+///
+/// The superseded archive goes too. That is a deliberate exception to the rule
+/// `erase` follows -- there, keeping the download is the default, because
+/// reinstalling the *same* mod later is then free. An archive an update has
+/// replaced is a different thing: it is a version the user has moved off, and
+/// keeping every one of those forever is unbounded growth nothing reports.
+///
+/// **Nothing outside our own folders is ever deleted**, on the same containment
+/// rule `erase` uses. An archive the user installed from their own Downloads
+/// folder is theirs, and `install_from_file` must not eat it.
+fn reclaim_previous(places: &Places, previous: Previous, now: &Path) -> Vec<String> {
+    let roots = erase::Roots::of(
+        &places.staging,
+        &places.derived,
+        &places.archives,
+        &places.mods_dir,
+        None,
+    );
+    let mut freed = Vec::new();
+    if let Some(build) = previous.build {
+        if roots.covers(&build) && std::fs::remove_dir_all(&build).is_ok() {
+            freed.push(build.display().to_string());
+        }
+    }
+    if let Some(old) = previous.archive {
+        // The same file means this install re-downloaded what was already
+        // there, and deleting it would delete what the loadout now points at.
+        // Both failing to canonicalise compares equal, which errs towards
+        // keeping the file -- the safe direction.
+        let same = std::fs::canonicalize(&old).ok() == std::fs::canonicalize(now).ok();
+        if !same && roots.covers(&old) && std::fs::remove_file(&old).is_ok() {
+            freed.push(old.display().to_string());
+        }
+    }
+    freed
+}
+
 /// Every mod a merge is made of, read from wherever it lives now.
 ///
 /// A merge's inputs are, by design, *not* in the game: it stands in for them,
@@ -369,8 +457,10 @@ pub fn install_from_link(
     let staged = places.staging.join(&plan.owner);
     // A reinstall over an existing entry is the common case; take out exactly
     // what the loadout recorded rather than guessing from the name.
+    let mut previous = Previous::default();
     if let Some(had) = loadout::Loadout::read(loadout_path).get(&plan.owner) {
         deploy::undeploy(&places.mods_dir, &had.deployed)?;
+        previous = Previous::of(had);
     }
     let placed = deploy::deploy(&staged, &places.mods_dir)?;
 
@@ -398,6 +488,10 @@ pub fn install_from_link(
     // offer the merge again, now against what is actually installed.
     let stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
     book.write(loadout_path)?;
+    // Only once the new record is safely on disk: a crash before this leaves
+    // the old files in place, which is recoverable, where the other order
+    // leaves a loadout pointing at something that has been deleted.
+    let freed = reclaim_previous(places, previous, &archive_path);
 
     on_stage(Stage::Done);
     Ok(Installed {
@@ -410,7 +504,7 @@ pub fn install_from_link(
         copied: placed.copied,
         dissolved: stale,
         top_level: placed.top_level,
-        notes: plan.notes,
+        notes: with_reclaimed(plan.notes, &freed),
     })
 }
 
@@ -425,6 +519,7 @@ pub fn install_from_file(
 
     let staged = places.staging.join(&plan.owner);
     let book = loadout::Loadout::read(loadout_path);
+    let mut previous = Previous::default();
     if let Some(had) = book.get(&plan.owner) {
         if !overwrite {
             return Err(format!(
@@ -433,6 +528,7 @@ pub fn install_from_file(
             ));
         }
         deploy::undeploy(&places.mods_dir, &had.deployed)?;
+        previous = Previous::of(had);
     }
     let placed = deploy::deploy(&staged, &places.mods_dir)?;
 
@@ -459,6 +555,10 @@ pub fn install_from_file(
     // offer the merge again, now against what is actually installed.
     let stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
     book.write(loadout_path)?;
+    // Only once the new record is safely on disk: a crash before this leaves
+    // the old files in place, which is recoverable, where the other order
+    // leaves a loadout pointing at something that has been deleted.
+    let freed = reclaim_previous(places, previous, &archive_path);
 
     Ok(Installed {
         owner: plan.owner,
@@ -470,7 +570,7 @@ pub fn install_from_file(
         copied: placed.copied,
         dissolved: stale,
         top_level: placed.top_level,
-        notes: plan.notes,
+        notes: with_reclaimed(plan.notes, &freed),
     })
 }
 
@@ -573,6 +673,116 @@ mod tests {
             stands_in_for(Some(&previous), "zzz_merge", &inputs),
             vec!["Mod A", "Mod B"]
         );
+    }
+
+    /// Updating a cleaned mod must not leave its old build in `derived/`.
+    ///
+    /// This is the leak the variant filter caused: `dissolve_merges_of` only
+    /// retires entries whose variant is `Merged`, so a *cleaned* or *mended*
+    /// build was orphaned by the update -- the record moved to the fresh staged
+    /// copy and nothing was left that knew the old build existed. Measured on a
+    /// real 66-mod library before the fix: 16 of 30 derived folders were orphans.
+    #[test]
+    fn updating_a_cleaned_mod_takes_its_old_build_with_it() {
+        let dir = Dir::new("reclaim_build");
+        let places = dir.places();
+        std::fs::create_dir_all(&places.derived).unwrap();
+
+        let build = places.derived.join("Cool Mod");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(build.join("CLEANED.EXML"), "<Data/>").unwrap();
+
+        let had = loadout::Entry {
+            owner: "Cool Mod".into(),
+            source: build.display().to_string(),
+            origin: Some(places.staging.join("Cool Mod").display().to_string()),
+            archive: None,
+            variant: loadout::Variant::Cleaned,
+            replaces: Vec::new(),
+            deployed: Vec::new(),
+            built_from: None,
+            enabled: true,
+            edited: false,
+        };
+
+        let freed = reclaim_previous(&places, Previous::of(&had), Path::new("new.zip"));
+        assert!(!build.exists(), "the old cleaned build is still in derived/");
+        assert_eq!(freed.len(), 1);
+    }
+
+    /// The staged copy of an ordinary mod is NOT a build of ours.
+    ///
+    /// `archive::install` has already replaced it in place by this point, so
+    /// deleting what `source` names would delete what was just installed.
+    #[test]
+    fn updating_an_ordinary_mod_does_not_delete_what_was_just_staged() {
+        let dir = Dir::new("reclaim_original");
+        let places = dir.places();
+        let staged = places.staging.join("Cool Mod");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("A.EXML"), "<Data/>").unwrap();
+
+        let had = loadout::Entry {
+            owner: "Cool Mod".into(),
+            source: staged.display().to_string(),
+            origin: Some(staged.display().to_string()),
+            archive: None,
+            variant: loadout::Variant::Original,
+            replaces: Vec::new(),
+            deployed: Vec::new(),
+            built_from: None,
+            enabled: true,
+            edited: false,
+        };
+
+        let freed = reclaim_previous(&places, Previous::of(&had), Path::new("new.zip"));
+        assert!(staged.exists(), "the freshly staged copy was deleted");
+        assert!(freed.is_empty());
+    }
+
+    /// The superseded archive goes, but only ours, and never the new one.
+    #[test]
+    fn the_old_archive_goes_and_the_users_own_does_not() {
+        let dir = Dir::new("reclaim_archive");
+        let places = dir.places();
+        std::fs::create_dir_all(&places.archives).unwrap();
+
+        let old = places.archives.join("Cool Mod 1.0.zip");
+        let new = places.archives.join("Cool Mod 2.0.zip");
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&new, b"new").unwrap();
+
+        // Somewhere that is not ours: the user's own download folder.
+        let theirs = dir.0.join("Downloads");
+        std::fs::create_dir_all(&theirs).unwrap();
+        let mine = theirs.join("Cool Mod 1.0.zip");
+        std::fs::write(&mine, b"theirs").unwrap();
+
+        let entry = |archive: &Path| loadout::Entry {
+            owner: "Cool Mod".into(),
+            source: places.staging.join("Cool Mod").display().to_string(),
+            origin: None,
+            archive: Some(archive.display().to_string()),
+            variant: loadout::Variant::Original,
+            replaces: Vec::new(),
+            deployed: Vec::new(),
+            built_from: None,
+            enabled: true,
+            edited: false,
+        };
+
+        reclaim_previous(&places, Previous::of(&entry(&old)), &new);
+        assert!(!old.exists(), "the superseded archive is still there");
+        assert!(new.exists(), "the archive just downloaded was deleted");
+
+        // An archive the user installed from their own folder is theirs.
+        reclaim_previous(&places, Previous::of(&entry(&mine)), &new);
+        assert!(mine.exists(), "deleted a file outside the managed folders");
+
+        // Re-downloading the same file must not delete what the record now
+        // points at. Both paths are the same file, so nothing should go.
+        reclaim_previous(&places, Previous::of(&entry(&new)), &new);
+        assert!(new.exists(), "deleted the archive the loadout now names");
     }
 
     struct Dir(PathBuf);

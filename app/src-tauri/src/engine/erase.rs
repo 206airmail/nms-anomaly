@@ -78,7 +78,7 @@ impl Roots {
     ///
     /// Resolved through the filesystem first, so a `source` of
     /// `D:\Staging\..\..\Windows` is judged on where it actually lands.
-    fn covers(&self, path: &Path) -> bool {
+    pub fn covers(&self, path: &Path) -> bool {
         let Ok(real) = std::fs::canonicalize(path) else {
             return false; // not there, so nothing to delete and nothing to allow
         };
