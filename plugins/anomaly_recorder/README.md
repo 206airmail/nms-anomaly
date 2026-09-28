@@ -56,3 +56,21 @@ Then copy `bin\anomaly_recorder.dll` into `<game>\Binaries\Atlas\plugins\`.
 `metaprobe.cpp` — the metadata/instance probe — stayed in `hook/` as a research
 tool. It is not a plugin and is not needed at runtime. The one place the
 recorder used to poke it (on a save being written) is now a no-op.
+
+## It deliberately stays on API v1
+
+`src/atlas.h` here is a **copy**, and it is deliberately not kept in step with
+Atlas's. The recorder needs nothing Atlas added after v1 — it reads no
+inventories and writes nothing — so there is no reason to move it, and one good
+reason not to.
+
+A compatibility mechanism is only ever tested by something that predates the
+change. When `SetElementAmount` was added to `AtlasApi`, it went in the middle
+of the struct rather than at the end; every pointer after it shifted, and this
+plugin called `SetElementAmount` when it meant to ask for the game's folder. It
+failed to start and Atlas unloaded it, on the first launch, with a clear line in
+the log. Had every plugin been rebuilt in lockstep, nothing would have noticed
+until somebody else's plugin hit it.
+
+So this file stays where it is on purpose. If Atlas ever gains something the
+recorder genuinely needs, move it then — and keep some other plugin behind.
