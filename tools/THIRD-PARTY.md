@@ -1,44 +1,85 @@
 # Third-party code bundled with Anomaly
 
-Anomaly ships two binaries it did not write, and one it builds itself from a
-vendored library. The two binaries are run as **separate processes** — nothing
-here links against them — and both can be replaced by the user with their own
-copy (see "Substituting your own build" below).
+Anomaly ships three binaries it did not write -- MBINCompiler, hgpaktool and
+7-Zip -- each unmodified and exactly as its author published it, and one of its
+own built around a vendored library.
+
+Every one of the three is run as a **separate process**. Nothing here links
+against any of them, and each can be replaced by the user with a copy they
+trust (see "Substituting your own build" below).
+
+None of the three is in git: only their licence texts are. Each section says
+where to get the binary, and the MBINCompiler one is worth reading before you
+take the newest release of it.
 
 ## MBINCompiler
 
 - Source: <https://github.com/monkeyman192/MBINCompiler>
+- Releases: <https://github.com/monkeyman192/MBINCompiler/releases>
 - Author: monkeyman192 and contributors
 - Licence: **GNU Lesser General Public License, version 3 (LGPL-3.0)**
 - Shipped as: `tools/MBINCompiler.exe`, unmodified, exactly as published by
-  upstream.
+  upstream. Currently **v7.03.2-pre2**; ask the binary with
+  `MBINCompiler.exe version`.
 
 Used to convert a compiled `.MBIN` asset back into readable XML, which is what
 makes a scene comparable against the game's own copy.
 
-The full LGPL-3.0 text, and the GPL-3.0 text it incorporates by reference, are
-available from <https://www.gnu.org/licenses/lgpl-3.0.html> and
-<https://www.gnu.org/licenses/gpl-3.0.html>. Upstream's copy is at
-<https://github.com/monkeyman192/MBINCompiler/blob/master/LICENSE.md>.
+### The version has to match the game, not be the newest
+
+This is the one place where "just take the latest release" is wrong.
+
+MBINCompiler's output tracks the **game's build**. Handed a 7.04 decompiler and
+a 7.03 game, it does not fail loudly -- it decompiles the same asset into
+different XML, and every comparison this program makes against the game's own
+files quietly becomes wrong. Being a version behind is much cheaper than being
+confidently incorrect, which is the failure this program exists to prevent.
+
+It is also a trap dressed as safe. At the time of writing every MBINCompiler
+release *except* the one shipped here is flagged a prerelease, so GitHub's
+"latest release" endpoint returns exactly what is bundled -- and would start
+returning a mismatched build the moment upstream marks a newer one stable. It
+would look correct right up until it silently was not.
+
+So: take the release whose version matches the No Man's Sky you are running.
+Anomaly reports the MBIN version the *mods* were built against, which is the
+closest thing it can measure, and lists mods built for another one.
+
+### Obtaining it for a fresh checkout
+
+The binary is **not** in git. Take `MBINCompiler.exe` from the matching release
+above and put it in `tools/`. Nothing else from that release is needed -- the
+`libMBIN` DLLs are for programs that link against it, and nothing here does.
 
 ## hgpaktool
 
 - Source: <https://github.com/monkeyman192/HGPAKtool>
+- Releases: <https://github.com/monkeyman192/HGPAKtool/releases>
 - Author: monkeyman192
 - Licence: **MIT**
-- Shipped as: `tools/hgpaktool.exe`, **rebuilt** — see below.
+- Shipped as: `tools/hgpaktool.exe`, unmodified, exactly as published by
+  upstream. Currently **1.1.3**; the version is in the first line of
+  `hgpaktool.exe --help`.
 
 Used to extract the unmodified copy of an asset from the game's `PCBANKS`
 archives.
 
-### Why hgpaktool is rebuilt rather than copied
+Unlike MBINCompiler this reads the pak *container*, which is stable across game
+updates, so the newest release is the right one to take.
 
-`pip install hgpaktool` produces a launcher in the virtualenv's `Scripts/` with
-an absolute path to *that machine's* `python.exe` written into it. Shipping it
-would produce a binary that runs on one computer. `tools/build_hgpaktool.py`
-freezes the same package with PyInstaller into a self-contained executable
-instead; the script refuses to install a build that still references the build
-machine. No hgpaktool source is modified.
+### Obtaining it for a fresh checkout
+
+The binary is **not** in git. Download `hgpaktool-x86_64-pc-windows.zip` from
+the releases above, and put the `hgpaktool.exe` inside it in `tools/`.
+
+This used to say something else. `pip install hgpaktool` produces a launcher in
+the virtualenv's `Scripts/` with an absolute path to *that machine's*
+`python.exe` written into it, so shipping it would have produced a binary that
+ran on one computer; a local script froze the package with PyInstaller instead.
+Upstream now publishes a self-contained executable of its own, which makes all
+of that unnecessary -- the two were measured against each other before the
+change: same version, byte-identical extraction from the same 97 `.pak` files,
+and upstream's is half a megabyte smaller.
 
 ## MinHook, inside the session recorder
 
@@ -57,8 +98,8 @@ of the DLL is in this repository.
 
 ## Substituting your own build
 
-Neither binary is required, and neither is hidden. Anomaly looks for them in
-this order, and the first hit wins:
+No tool here is required, and none is hidden. Anomaly looks for them in this
+order, and the first hit wins:
 
 1. `NMS_MBINCOMPILER` / `NMS_HGPAKTOOL` / `NMSCHECK_HOOK_DLL` — set any of them
    to the full path of your
