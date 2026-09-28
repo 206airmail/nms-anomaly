@@ -68,6 +68,74 @@ fn percent_decode(raw: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Bytes that may stand for themselves in the path or query of a URL.
+///
+/// RFC 3986's `pchar`, plus the delimiters that give a path and query their
+/// shape. Everything else has to be escaped to survive a URI parser.
+fn stands_alone(byte: u8) -> bool {
+    matches!(byte,
+        // unreserved
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~'
+        // sub-delims, which a query uses to separate its own fields
+        | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+        // structure: the segment, query and fragment separators
+        | b':' | b'@' | b'/' | b'?' | b'#'
+    )
+}
+
+/// Escape a URL the way its own server should have.
+///
+/// Nexus hands back a mirror `URI` whose last path segment is the mod's *file
+/// name*, and it does not always escape it -- "Better Frigate View 2.3-2574…"
+/// arrives with the spaces still in it. `http`'s parser refuses a space
+/// outright, so the install died on `http: invalid uri character` before a
+/// single byte was requested, under the heading "could not reach the download
+/// server". Nothing was unreachable; the address was never posted.
+///
+/// A `%` that already introduces a valid escape is left exactly as it stands.
+/// Re-encoding it would turn `%20` into `%2520` and ask the CDN for a file
+/// with a literal `%20` in its name, which is a 404 rather than a download --
+/// so this has to be able to tell an escape from a stray percent sign, and it
+/// keeps the stray one by escaping it.
+///
+/// Only the part after the authority is touched. `[` and `]` are legal in an
+/// IPv6 host and nowhere else, and a host is the server's own business.
+pub fn escape_url(url: &str) -> String {
+    let trimmed = url.trim();
+    // Where the path begins: after `scheme://host:port`, or at the start when
+    // there is no scheme to skip past.
+    let from = match trimmed.find("://") {
+        Some(at) => {
+            let after = at + 3;
+            after + trimmed[after..].find('/').unwrap_or(trimmed.len() - after)
+        }
+        None => 0,
+    };
+
+    let (head, rest) = trimmed.split_at(from);
+    let bytes = rest.as_bytes();
+    let mut out = String::with_capacity(rest.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        let escaped = byte == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit();
+        if escaped {
+            out.push_str(&rest[i..i + 3]);
+            i += 3;
+        } else if stands_alone(byte) {
+            out.push(byte as char);
+            i += 1;
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+            i += 1;
+        }
+    }
+    format!("{head}{out}")
+}
+
 /// Download `url` into `dir`, calling `on_progress` as it goes.
 ///
 /// Returns where the finished file landed. Existing files are not replaced: a
@@ -99,7 +167,10 @@ pub fn fetch(
         .into();
 
     let mut response = agent
-        .get(url)
+        // Escaped here rather than where the mirror is chosen, so that every
+        // route to a download gets it: the CDN's own address is the one thing
+        // this function is handed and the one thing it cannot vouch for.
+        .get(escape_url(url))
         .call()
         .map_err(|e| format!("could not reach the download server: {e}"))?;
 
@@ -187,6 +258,61 @@ fn unused_path(dir: &Path, name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cdn_address_with_a_space_in_it_is_made_fetchable() {
+        // The real shape: Nexus puts the mod's file name in the path and does
+        // not always escape it. A space is the byte `http` refuses, and it is
+        // the one mod file names are full of.
+        assert_eq!(
+            escape_url("https://cdn.nexus.com/1634/2308/Better Frigate View 2.3-2574.zip?md5=aB-c"),
+            "https://cdn.nexus.com/1634/2308/Better%20Frigate%20View%202.3-2574.zip?md5=aB-c"
+        );
+    }
+
+    #[test]
+    fn a_query_keeps_the_punctuation_that_gives_it_shape() {
+        // Escaping these would hand the CDN one long parameter instead of
+        // three, which fails as surely as not posting the address at all.
+        let url = "https://cdn.nexus.com/x.zip?md5=a+b/c=&expires=123&user_id=7#frag";
+        assert_eq!(escape_url(url), url);
+    }
+
+    #[test]
+    fn an_escape_that_is_already_there_is_left_alone() {
+        // `%20` re-encoded to `%2520` asks for a file whose name contains a
+        // literal "%20", which is a 404 rather than a download.
+        assert_eq!(
+            escape_url("https://cdn.nexus.com/Better%20Frigate.zip?md5=x"),
+            "https://cdn.nexus.com/Better%20Frigate.zip?md5=x"
+        );
+        // But a percent that introduces nothing is a stray, and stands for
+        // itself: `100%` in a file name is not the start of an escape.
+        assert_eq!(
+            escape_url("https://cdn.nexus.com/100%.zip"),
+            "https://cdn.nexus.com/100%25.zip"
+        );
+        assert_eq!(
+            escape_url("https://cdn.nexus.com/a%zz.zip"),
+            "https://cdn.nexus.com/a%25zz.zip"
+        );
+    }
+
+    #[test]
+    fn the_host_is_the_servers_own_business() {
+        // `[` and `]` are legal in an IPv6 host and illegal in a path, so the
+        // authority is skipped rather than escaped along with everything else.
+        assert_eq!(
+            escape_url("http://[::1]:8080/some file.zip"),
+            "http://[::1]:8080/some%20file.zip"
+        );
+    }
+
+    #[test]
+    fn an_address_that_was_already_fine_is_returned_unchanged() {
+        let url = "https://supporter-files.nexus-cdn.com/1634/2308/Mod-2308-1-0-1757165929.zip";
+        assert_eq!(escape_url(url), url);
+    }
 
     #[test]
     fn a_url_gives_up_its_file_name() {
