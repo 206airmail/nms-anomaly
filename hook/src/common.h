@@ -51,13 +51,6 @@ struct Config {
     bool instProbeOnSave = false;
     // Settles whether the runtime holds item ids as text; see metaprobe.cpp.
     bool stringHunt = false;
-    // Keep the game running when its window loses focus. Changes how the game
-    // behaves rather than only observing it, so it is off unless asked for.
-    bool noPauseOnFocusLoss = false;
-    // Resolve the game's root singleton and expose player state to plugins.
-    // On by default, unlike the probes: it is one linear scan of .text at
-    // startup (tens of ms), it never writes to the game, and it patches no
-    // code -- and it is the foundation everything else in the API stands on.
 };
 extern Config g_config;
 
@@ -95,14 +88,6 @@ namespace hooks {
     extern decltype(&CreateFileW) o_CreateFileW;
     extern decltype(&WriteFile) o_WriteFile;
     extern decltype(&SetUnhandledExceptionFilter) o_SetUnhandledExceptionFilter;
-}
-
-// ---- no pause on focus loss (nopause.cpp) ----
-namespace nopause {
-    // Installs and enables its own hooks; does nothing if the flag is off. Must run
-    // after hooks::Install(), and from a thread rather than DllMain, because user32
-    // may not be mapped yet.
-    void Install();
 }
 
 // ---- metadata probe (metaprobe.cpp) ----

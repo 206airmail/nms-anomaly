@@ -56,8 +56,16 @@ scan is only needed if the signature itself ever stops matching.
    Atlas loads the plugin rather than in `DllMain`, so a few of the earliest
    file opens are no longer recorded. Module loads are caught up on install.
    See `plugins/anomaly_recorder/README.md`.
-2. `nopause.cpp` becomes its own plugin -- it is already the right shape (one
-   behaviour, one flag, touches no game code). Still in `hook/` for now.
+2. ~~`nopause.cpp` becomes its own plugin~~ **done 2026-09-28**, as its own
+   repository: `206airmail/nms-nopause` (private, MIT). It is the first plugin
+   that CHANGES the game rather than reading or writing its data, and it proves
+   a useful point: it touches nothing inside NMS, so a game patch cannot break
+   it -- the opposite of anything built on the player state. It exports only
+   Start and Stop, because it does not care when a save loads, and brings its
+   own MinHook. Removed from `hook/`.
+
+   Note it had been silently OFF since Atlas took the proxy slot, because it
+   lived in the combined DLL.
 3. `metaprobe.cpp` stays a research tool; it is not a plugin. See above.
 4. ~~Anomaly learns to install Atlas~~ **done 2026-09-28.** `engine/hook.rs`
    now installs and removes BOTH halves, and "installed" means both -- Atlas

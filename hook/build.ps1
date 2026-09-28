@@ -14,7 +14,7 @@ $mh = Join-Path $here 'third_party\minhook'
 $sources = @(
     "$here\src\dllmain.cpp", "$here\src\log.cpp", "$here\src\hooks.cpp",
     "$here\src\crash.cpp", "$here\src\proxy.cpp", "$here\src\util.cpp",
-    "$here\src\metaprobe.cpp", "$here\src\nopause.cpp",
+    "$here\src\metaprobe.cpp",
     "$mh\src\buffer.c", "$mh\src\hook.c", "$mh\src\trampoline.c", "$mh\src\hde\hde64.c"
 ) | ForEach-Object { "`"$_`"" }
 

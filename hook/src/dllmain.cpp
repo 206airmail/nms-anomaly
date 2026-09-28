@@ -39,7 +39,6 @@ void LoadConfig() {
     g_config.instProbeBudgetMB = (int)GetPrivateProfileIntW(L"hook", L"InstProbeBudgetMB", 6144, ini.c_str());
     g_config.instProbeOnSave = GetPrivateProfileIntW(L"hook", L"InstProbeOnSave", 0, ini.c_str()) != 0;
     g_config.stringHunt = GetPrivateProfileIntW(L"hook", L"StringHunt", 0, ini.c_str()) != 0;
-    g_config.noPauseOnFocusLoss = GetPrivateProfileIntW(L"hook", L"NoPauseOnFocusLoss", 0, ini.c_str()) != 0;
 }
 
 void Start() {
@@ -66,7 +65,7 @@ void Start() {
                   "config: modFileOpens=%d fileFailures=%d allFileOpens=%d firstChance=%d "
                   "moduleLoads=%d saveWrites=%d memory=%d debugPerSec=%d "
                   "metaProbe=%d metaProbeDelay=%ds metaProbeHeap=%d metaProbeBudget=%dMB "
-                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB instProbeOnSave=%d stringHunt=%d noPause=%d "
+                  "metaProbeCode=%d instProbe=%d instProbeBudget=%dMB instProbeOnSave=%d stringHunt=%d "
                   "",
                   g_config.logModFileOpens, g_config.logFileFailures, g_config.logAllFileOpens,
                   g_config.logFirstChanceExceptions, g_config.logModuleLoads,
@@ -74,8 +73,8 @@ void Start() {
                   g_config.metaProbe, g_config.metaProbeDelaySeconds,
                   g_config.metaProbeScanHeap, g_config.metaProbeHeapBudgetMB,
                   g_config.metaProbeScanCode, g_config.instProbe,
-                  g_config.instProbeBudgetMB, g_config.instProbeOnSave, g_config.stringHunt,
-                  g_config.noPauseOnFocusLoss);
+                  g_config.instProbeBudgetMB, g_config.instProbeOnSave,
+                  g_config.stringHunt);
     hooks::Install();
     crash::Install();
     metaprobe::Start();
@@ -83,7 +82,6 @@ void Start() {
     HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
         t_inHook = true;
         hooks::InstallLate();
-        nopause::Install();
         return 0;
     }, nullptr, 0, nullptr);
     if (t) CloseHandle(t);
