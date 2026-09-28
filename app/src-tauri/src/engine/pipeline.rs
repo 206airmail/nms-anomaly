@@ -515,18 +515,38 @@ pub fn install_from_file(
     loadout_path: &Path,
     overwrite: bool,
 ) -> Result<Installed, String> {
-    let plan = archive::install(archive_path, &places.staging, true)?;
+    // Who the archive is, before a byte of it is written anywhere.
+    //
+    // The refusal below used to sit *after* the extract, which made "no, do
+    // not replace it" replace something anyway: `archive::install` clears
+    // `staging/<owner>` and writes the new version into it, so declining left
+    // the staged copy already updated, the loadout still describing the old
+    // one, and the game holding a build nothing pointed at. A refusal has to
+    // cost nothing, so it is decided first.
+    let named = archive::preview(archive_path, &places.staging)?;
 
-    let staged = places.staging.join(&plan.owner);
     let book = loadout::Loadout::read(loadout_path);
+    // Cloned so the refusal can be decided, and the old entry still read,
+    // without holding a borrow of `book` across the write below.
+    let known = book.get(&named.owner).cloned();
+    if known.is_some() && !overwrite {
+        // Not "already in the mods folder": this is a fact about the *loadout*,
+        // and the two come apart -- a mod recorded here whose folder another
+        // manager has since purged is installed as far as this program is
+        // concerned and absent as far as the game is. Saying the wrong one of
+        // those sends the user looking in the mods folder for something that
+        // is not there.
+        return Err(format!(
+            "{} is already installed. Choose to replace it, or remove it first.",
+            named.owner
+        ));
+    }
+
+    let plan = archive::install(archive_path, &places.staging, true)?;
+    let staged = places.staging.join(&plan.owner);
+
     let mut previous = Previous::default();
-    if let Some(had) = book.get(&plan.owner) {
-        if !overwrite {
-            return Err(format!(
-                "{} is already in the mods folder. Remove it first, or choose to replace it.",
-                plan.owner
-            ));
-        }
+    if let Some(had) = &known {
         deploy::undeploy(&places.mods_dir, &had.deployed)?;
         previous = Previous::of(had);
     }
@@ -885,6 +905,91 @@ mod tests {
 
         assert!(install_from_file(&zip, &places, &book, false).is_err());
         assert!(install_from_file(&zip, &places, &book, true).is_ok());
+    }
+
+    #[test]
+    fn a_refused_reinstall_leaves_the_staged_copy_alone() {
+        // Saying no has to cost nothing.
+        //
+        // The refusal used to happen *after* the extract, so declining to
+        // replace a mod replaced the staged copy of it anyway: staging held
+        // the new version, the loadout still described the old one, and the
+        // only way to notice was to read the folder.
+        let dir = Dir::new("refused");
+        let places = dir.places();
+        std::fs::create_dir_all(&places.mods_dir).unwrap();
+        let book = dir.0.join("loadout.json");
+
+        let Some(first) = make_zip(&dir.0, "Cool Mod.zip", &[("Cool Mod/A.EXML", "<v1/>")]) else {
+            eprintln!("7-Zip not installed; skipping");
+            return;
+        };
+        install_from_file(&first, &places, &book, false).unwrap();
+
+        // A second version of the same mod, refused.
+        let second = make_zip(&dir.0, "Cool Mod v2.zip", &[("Cool Mod/A.EXML", "<v2/>")]).unwrap();
+        assert!(install_from_file(&second, &places, &book, false).is_err());
+
+        let staged = places.staging.join("Cool Mod/Cool Mod/A.EXML");
+        assert_eq!(
+            std::fs::read_to_string(&staged).unwrap(),
+            "<v1/>",
+            "refusing to install must not have staged the new version"
+        );
+        assert_eq!(
+            std::fs::read_to_string(places.mods_dir.join("Cool Mod/A.EXML")).unwrap(),
+            "<v1/>",
+            "and the game must still be reading the one that is recorded"
+        );
+
+        // Saying yes replaces both, and the wording of the refusal does not
+        // claim the mods folder, which is not what it was decided from.
+        let said = install_from_file(&second, &places, &book, false).unwrap_err();
+        assert!(said.contains("already installed"), "{said}");
+        assert!(!said.contains("mods folder"), "{said}");
+
+        install_from_file(&second, &places, &book, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "<v2/>");
+        assert_eq!(
+            std::fs::read_to_string(places.mods_dir.join("Cool Mod/A.EXML")).unwrap(),
+            "<v2/>"
+        );
+    }
+
+    #[test]
+    fn a_mod_whose_folder_was_purged_is_still_known_to_be_installed() {
+        // The state a Vortex purge leaves: the loadout records the mod and the
+        // game folder is empty. The refusal is decided on the loadout, so this
+        // must refuse -- and, because it does, the screen has to be able to
+        // learn that beforehand rather than offering a plain "Install it" and
+        // running into a refusal the user was never asked about.
+        let dir = Dir::new("purged");
+        let places = dir.places();
+        std::fs::create_dir_all(&places.mods_dir).unwrap();
+        let book = dir.0.join("loadout.json");
+
+        let Some(zip) = make_zip(&dir.0, "Cool Mod.zip", &[("Cool Mod/A.EXML", "<v1/>")]) else {
+            eprintln!("7-Zip not installed; skipping");
+            return;
+        };
+        install_from_file(&zip, &places, &book, false).unwrap();
+
+        // Something else takes the files away, leaving the record behind.
+        std::fs::remove_dir_all(places.mods_dir.join("Cool Mod")).unwrap();
+
+        // `archive::preview` alone cannot see this -- there is no folder in the
+        // way any more -- which is exactly why `install_preview` asks the
+        // loadout as well.
+        let blind = archive::preview(&zip, &places.mods_dir).unwrap();
+        assert!(!blind.collides, "the folder really is gone");
+        assert!(
+            loadout::Loadout::read(&book).get(&blind.owner).is_some(),
+            "but the loadout still records it, and that is what install refuses on"
+        );
+
+        assert!(install_from_file(&zip, &places, &book, false).is_err());
+        install_from_file(&zip, &places, &book, true).unwrap();
+        assert!(places.mods_dir.join("Cool Mod/A.EXML").exists());
     }
 
     #[test]

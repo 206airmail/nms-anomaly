@@ -128,7 +128,12 @@ pub struct Plan {
     pub owner: String,
     /// how many files it holds
     pub files: usize,
-    /// true when a folder of that name is already installed
+    /// true when installing would replace something.
+    ///
+    /// `preview` can only set this from the mods folder, which is the folder
+    /// that would be written over. The install command widens it to include
+    /// what the *loadout* records, because that is what the install itself
+    /// refuses on -- see `install_preview`.
     pub collides: bool,
     /// anything the user should know before pressing the button
     pub notes: Vec<String>,
