@@ -64,6 +64,14 @@ tools/_itemgen/
 tools/nms_items.json
 tools/nms_items_ids.txt
 tools/nms_classes.json
+# The pak index: 16 MB listing every file in every archive of one install, so it
+# is both regenerable and specific to whoever generated it.
+tools/filenames.json
+# MBINs pulled out of the paks, and their decompiled form. Hello Games' data,
+# regenerated per install, and nothing here is tracked as an exception.
+tools/*.mbin
+tools/*.MXML
+tools/*.EXML
 
 # 7-Zip, redistributable but not ours to version. The licence text IS tracked --
 # we ship it, so losing it would mean shipping LGPL software without its terms.
