@@ -2718,6 +2718,54 @@ async fn install_from_nxm(
     .map_err(|err| err.to_string())?
 }
 
+/// The archives folder, and what in it is not installed yet.
+#[derive(serde::Serialize)]
+struct ArchivesWaiting {
+    dir: String,
+    exists: bool,
+    waiting: Vec<engine::archivescan::Waiting>,
+}
+
+/// What dropping archives into the archives folder has made available.
+///
+/// This is how a library travels as nothing but its downloads: someone hands
+/// over the original archives, they go in this folder, and each is offered for
+/// install already linked to its Nexus page. See `engine::archivescan`.
+#[tauri::command]
+async fn archives_waiting(
+    app: tauri::AppHandle,
+    mods_dir: Option<String>,
+    game_root: Option<String>,
+) -> Result<ArchivesWaiting, String> {
+    let spots = places(mods_dir, game_root)?;
+    let book = loadout_file(&app)
+        .map(|path| loadout::Loadout::read(&path))
+        .unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || ArchivesWaiting {
+        dir: spots.archives.display().to_string(),
+        exists: spots.archives.is_dir(),
+        waiting: engine::archivescan::survey(&spots.archives, &book),
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// Show the archives folder in Explorer, making it first if it is not there.
+///
+/// Made rather than refused: on a fresh install nothing has been downloaded
+/// yet, so the folder does not exist -- and that is exactly when someone is
+/// being told "put the archives in here".
+#[tauri::command]
+async fn archives_open(mods_dir: Option<String>, game_root: Option<String>) -> Result<String, String> {
+    let dir = places(mods_dir, game_root)?.archives;
+    std::fs::create_dir_all(&dir).map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map_err(|err| format!("could not open {}: {err}", dir.display()))?;
+    Ok(dir.display().to_string())
+}
+
 /// Install an archive already on disk, through the same three layers.
 #[tauri::command]
 async fn install_archive(
@@ -3066,6 +3114,8 @@ pub fn run() {
             nxm_owner,
             nexus_browse,
             install_archive,
+            archives_waiting,
+            archives_open,
             install_from_nxm,
             nexus_mod,
             mod_members,

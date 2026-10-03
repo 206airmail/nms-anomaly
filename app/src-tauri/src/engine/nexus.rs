@@ -385,7 +385,7 @@ fn stem(name: &str) -> &str {
 /// The dashed form carries the exact second. The spaced form is cut to the
 /// minute -- measured: 06:30:38 is written `06-30Z`, 07:58:53 `07-58Z` -- so it
 /// covers sixty seconds.
-fn upload_span(uploaded: &str) -> Option<std::ops::Range<i64>> {
+pub(crate) fn upload_span(uploaded: &str) -> Option<std::ops::Range<i64>> {
     if let Ok(t) = uploaded.parse::<i64>() {
         return Some(t..t + 1);
     }

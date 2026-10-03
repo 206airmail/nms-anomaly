@@ -707,6 +707,49 @@ export async function installFromNxm(
   });
 }
 
+/** One archive in the archives folder that is not installed yet. */
+export interface Waiting {
+  archive: string;
+  file: string;
+  mod_id: number | null;
+  title: string | null;
+  version: string | null;
+  /** the installed mod this is a newer download of */
+  replaces: string | null;
+}
+
+export interface ArchivesWaiting {
+  dir: string;
+  exists: boolean;
+  waiting: Waiting[];
+}
+
+/**
+ * What in the archives folder is not installed yet.
+ *
+ * How a library travels as nothing but its downloads: the archives go in this
+ * folder and every one is offered, already linked to its Nexus page.
+ */
+export async function archivesWaiting(
+  modsDir?: string,
+  gameRoot?: string,
+): Promise<ArchivesWaiting | null> {
+  if (!inTauri()) return null;
+  return await invoke<ArchivesWaiting>("archives_waiting", {
+    modsDir: modsDir ?? null,
+    gameRoot: gameRoot ?? null,
+  });
+}
+
+/** Open the archives folder in Explorer, creating it if need be. */
+export async function archivesOpen(modsDir?: string, gameRoot?: string): Promise<string | null> {
+  if (!inTauri()) return null;
+  return await invoke<string>("archives_open", {
+    modsDir: modsDir ?? null,
+    gameRoot: gameRoot ?? null,
+  });
+}
+
 /** Install an archive already on disk, through staging and a deploy. */
 export async function installArchive(
   archive: string,

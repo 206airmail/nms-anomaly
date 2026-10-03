@@ -28,6 +28,7 @@ pub fn read_json<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Opti
 pub mod adopt;
 pub mod analyze;
 pub mod archive;
+pub mod archivescan;
 pub mod clock;
 pub mod collection;
 pub mod crashinfo;

@@ -46,6 +46,9 @@
   import { unmergedNote, type Conflict, type SceneDrift } from "./types";
   import type { Action } from "./actions";
   import {
+    archivesOpen,
+    archivesWaiting,
+    type ArchivesWaiting,
     installPreview,
     modMembers,
     nexusMod,
@@ -214,6 +217,71 @@
   /** For the preset bar, which reports on the set rather than on any one mod. */
   const managedCount = $derived(library.rows.filter((r) => r.managed).length);
   const onCount = $derived(library.rows.filter((r) => r.managed && r.enabled).length);
+
+  /**
+   * What the archives folder holds that is not installed.
+   *
+   * Looked at whenever the library has been read, so a mod installed or
+   * deleted anywhere moves it, and so does pressing "Check again" after
+   * dropping archives in. A directory listing and nothing else: no network.
+   */
+  let inbox = $state<ArchivesWaiting | null>(null);
+  let importing = $state(false);
+  let importNote = $state<string | null>(null);
+
+  async function lookIn() {
+    try {
+      inbox = await archivesWaiting(modsDir, gameRoot);
+    } catch {
+      // No game found yet, most likely. The Library panel already says so,
+      // and this is an offer rather than something that can fail loudly.
+      inbox = null;
+    }
+  }
+
+  $effect(() => {
+    if (!library.loading) void lookIn();
+  });
+
+  async function openArchives() {
+    try {
+      await archivesOpen(modsDir, gameRoot);
+      await lookIn();
+    } catch (err) {
+      actionError = String(err);
+    }
+  }
+
+  /**
+   * Install everything waiting, one after another, through the ordinary queue.
+   *
+   * One at a time because every install deploys into the same mods folder and
+   * rewrites the same loadout. A failure does not stop the rest: one archive
+   * with nothing installable in it should not leave sixty others waiting.
+   * Nexus is asked about the new mods by the update check's own top-up once
+   * the library is re-read, so they arrive linked to their pages.
+   */
+  async function installWaiting() {
+    const list = inbox?.waiting ?? [];
+    if (!list.length) return;
+    importing = true;
+    importNote = null;
+    actionError = null;
+    let failed = 0;
+    for (const w of list) {
+      try {
+        await installs.fromFile(w.archive, modsDir, gameRoot, w.replaces !== null);
+      } catch {
+        failed++;
+      }
+    }
+    importing = false;
+    const done = list.length - failed;
+    importNote = failed
+      ? `${done} installed. ${failed} could not be; the list along the bottom of the window says why.`
+      : `${done} ${done === 1 ? "mod" : "mods"} installed.`;
+    await settle();
+  }
 
   /** Re-read the library, then let the app rescan behind it. */
   async function settle() {
@@ -660,6 +728,54 @@
               </p>
             </section>
           {/if}
+
+          {#if inbox && !plan}
+            {@const waiting = inbox.waiting}
+            <!-- How a library is handed to someone else: the original
+                 archives, nothing more. They go in this folder, and Nexus has
+                 already written each one's page into its file name. -->
+            <section class="panel">
+              <header class="hud-label">Archives folder</header>
+              {#if waiting.length}
+                <h2>
+                  {waiting.length}
+                  {waiting.length === 1 ? "mod is" : "mods are"} waiting to be installed.
+                </h2>
+                <ul class="waiting">
+                  {#each waiting as w (w.archive)}
+                    <li>
+                      <span class="who">{w.title ?? w.file}</span>
+                      {#if w.version}<span class="ver mono">{w.version}</span>{/if}
+                      {#if w.replaces}
+                        <span class="note">updates {names.of(w.replaces)}</span>
+                      {:else if w.mod_id === null}
+                        <span class="note">not from Nexus</span>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="lede">
+                  Everything in it is installed. To install a set of mods someone
+                  gave you, put their archives here, just as they downloaded them
+                  from Nexus.
+                </p>
+              {/if}
+              <p class="wrote path">{inbox.dir}</p>
+              {#if importNote}
+                <p class="lede">{importNote}</p>
+              {/if}
+              <div class="verbs">
+                {#if waiting.length}
+                  <Button variant="primary" onclick={installWaiting} busy={importing}>
+                    {importing ? "Installing…" : `Install ${waiting.length === 1 ? "it" : `all ${waiting.length}`}`}
+                  </Button>
+                {/if}
+                <Button onclick={openArchives}>Open the folder</Button>
+                <Button onclick={lookIn} disabled={importing}>Check again</Button>
+              </div>
+            </section>
+          {/if}
         {:else}
           <ModRecord
             row={selected}
@@ -791,6 +907,35 @@
 {/if}
 
 <style>
+  .waiting {
+    list-style: none;
+    margin: 0.5rem 0;
+    padding: 0;
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+
+  .waiting li {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.1875rem 0;
+    font-size: var(--t-small);
+    color: var(--readout);
+  }
+
+  .waiting .who {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .waiting .ver,
+  .waiting .note {
+    flex: none;
+    color: var(--dim);
+  }
+
   .library {
     display: flex;
     flex-direction: column;
