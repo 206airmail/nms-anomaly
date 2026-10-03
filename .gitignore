@@ -20,6 +20,9 @@ plugins/*/bin/
 plugins/*/obj/
 /build/
 /dist/
+# MSVC program databases. vc140.pdb lands in whatever folder cl.exe was run
+# from, which once was the repo root, and it was committed from there.
+*.pdb
 
 # ---- per-user state: not the same on any two machines ----
 # Every user builds their own vanilla game cache against their own install, so
