@@ -411,7 +411,10 @@
         // counted; the check is throttled to four hours and nothing
         // invalidates it when the library changes, which is what leaves those
         // rows behind.
-        updates.installedNow(askable(result));
+        updates.installedNow(
+          askable(result),
+          Object.fromEntries(library.mods.map((m) => [m.owner, m.version])),
+        );
         // And ask about any of them the remembered report does not cover — a
         // mod installed since the last check, or one whose archive we could not
         // read then and can now. One request each, none when nothing is missing,
@@ -444,7 +447,11 @@
   function askable(from: Report): string[] {
     const ours = new Set(library.mergeFolders);
     const named = from.mods.map((m) => m.name).filter((name) => !ours.has(name));
-    return [...new Set([...named, ...library.heldByMerge])];
+    // Switched off is still installed: `check_updates` asks about these too.
+    const off = library.book.entries
+      .filter((e) => !e.enabled && e.variant !== "merged")
+      .map((e) => e.owner);
+    return [...new Set([...named, ...library.heldByMerge, ...off])];
   }
 
   /** Part of the pass, not a straggler after it. See [`checking`]. */

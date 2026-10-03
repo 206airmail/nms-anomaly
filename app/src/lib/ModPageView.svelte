@@ -2,6 +2,7 @@
   import Awaiting from "./Awaiting.svelte";
   import Button from "./Button.svelte";
   import { openModPage } from "./engine";
+  import { updates } from "./updates.svelte";
   import type { Identity, ModPage } from "./engine";
 
   interface Props {
@@ -15,6 +16,21 @@
   }
 
   let { identity, page, variant = null, fetching, pageError, members }: Props = $props();
+
+  /**
+   * The newest version Nexus offers, which is not the page's own `version`.
+   * That one is a field the author types by hand and often forgets: page 3718
+   * says 1.4.0 while it offers 1.4.2 and archives 1.4.0. The update check
+   * walks the files themselves, so its answer is used whenever there is one.
+   */
+  const check = $derived(updates.checks.find((c) => c.owner === identity.owner) ?? null);
+  const newest = $derived(
+    check?.state === "outdated"
+      ? check.latest_version
+      : check?.state === "current"
+        ? check.recorded_version
+        : (page?.version ?? null),
+  );
 
   let opening = $state(false);
   let openError = $state<string | null>(null);
@@ -130,10 +146,10 @@
         <dd class="path">our {variant} build</dd>
       </div>
     {/if}
-    {#if page?.version}
+    {#if newest}
       <div>
         <dt>On Nexus</dt>
-        <dd class="path">{page.version}</dd>
+        <dd class="path">{newest}</dd>
       </div>
     {/if}
     <div>

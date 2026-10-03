@@ -116,13 +116,33 @@ class Updates {
    */
   #here = $state<Set<string> | null>(null);
 
-  /** Tell the store what the last scan found. See [`#here`]. */
-  installedNow(owners: string[]) {
+  /**
+   * The version each mod's archive records now, where one is known.
+   *
+   * The other way a remembered verdict outlives what it was about: update a
+   * mod in place and the folder keeps its name, so the row "7.01, 7.05 is out"
+   * still has an owner on disk, `fill` counts it as asked, and the badge stays
+   * for up to four hours after 7.05 went in. Measured on BetterRewardsCombined.
+   * A verdict whose `recorded_version` is not the version installed now is
+   * about a file that is gone, so it is treated as no verdict at all.
+   */
+  #versions = $state<Record<string, string | null>>({});
+
+  /** Tell the store what the last scan found. See [`#here`] and [`#versions`]. */
+  installedNow(owners: string[], versions: Record<string, string | null> = {}) {
     this.#here = new Set(owners);
+    this.#versions = versions;
   }
 
+  /** True when the row was answered about a version that is no longer installed. */
+  #superseded = (c: UpdateCheck): boolean => {
+    const now = this.#versions[c.owner];
+    return !!now && !!c.recorded_version && now !== c.recorded_version;
+  };
+
   /** Before the first scan nothing is filtered: one stale row beats no list. */
-  #live = (c: UpdateCheck): boolean => !this.#here || this.#here.has(c.owner);
+  #live = (c: UpdateCheck): boolean =>
+    (!this.#here || this.#here.has(c.owner)) && !this.#superseded(c);
 
   /** Every check still worth showing, which is every check about a live mod. */
   get checks() {
@@ -233,7 +253,9 @@ class Updates {
    */
   async fill(modsDir: string | undefined): Promise<void> {
     if (this.#inFlight || this.checking || !this.account || !this.#here) return;
-    const asked = new Set((this.report?.checks ?? []).map((c) => c.owner));
+    const asked = new Set(
+      (this.report?.checks ?? []).filter((c) => !this.#superseded(c)).map((c) => c.owner),
+    );
     const missing = [...this.#here].filter((owner) => !asked.has(owner));
     if (!missing.length) return;
 

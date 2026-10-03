@@ -1070,6 +1070,23 @@ async fn check_updates(
             });
         }
 
+        // And the mods switched off. Still installed, still one click from the
+        // game, and invisible to a scan of the game folder — so a new version of
+        // one went unmentioned (measured: Freighter Salvage Terminals, two
+        // versions behind and never asked about). Same staged root as above.
+        let mut listed: std::collections::BTreeSet<String> =
+            active.iter().map(|m| m.name.clone()).collect();
+        for entry in book.entries.iter().filter(|e| !e.enabled) {
+            if entry.variant == loadout::Variant::Merged || !listed.insert(entry.owner.clone()) {
+                continue;
+            }
+            active.push(engine::model::Mod {
+                name: entry.owner.clone(),
+                root: entry.origin_path().join(&entry.owner).display().to_string(),
+                ..Default::default()
+            });
+        }
+
         if let Some(wanted) = owners {
             active.retain(|m| wanted.iter().any(|name| name == &m.name));
         }
@@ -1308,10 +1325,14 @@ async fn mod_names(
             scan.mods.iter().map(|m| m.name.as_str()).collect();
         for entry in &book.entries {
             if !seen.contains(entry.owner.as_str()) {
-                owners.push((
-                    entry.owner.clone(),
-                    Some(library::archive_stem(&entry.source).to_string()),
-                ));
+                // The recorded archive first: `source` is the build being
+                // run, and for a cleaned or edited mod that is a folder of
+                // ours (`Foo__edited`) that carries no Nexus title at all.
+                let archive = staged
+                    .get(&entry.owner)
+                    .cloned()
+                    .unwrap_or_else(|| library::archive_stem(&entry.source).to_string());
+                owners.push((entry.owner.clone(), Some(archive)));
             }
         }
         let mut shown = library::names_for(owners, &names);
@@ -2883,9 +2904,17 @@ async fn install_preview(
     let book_path = loadout_file(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = mods_root(mods_dir)?;
-        let mut plan = engine::archive::preview(&PathBuf::from(archive), &root)?;
+        let archive = PathBuf::from(archive);
+        let mut plan = engine::archive::preview(&archive, &root)?;
         let book = loadout::Loadout::read(&book_path);
         plan.collides = plan.collides || book.get(&plan.owner).is_some();
+        // An update whose author renamed the folder inside the zip replaces
+        // the installed version under its old name, and the button has to say
+        // which mod is about to go.
+        if let Some(old) = engine::pipeline::replaces_other(&book_path, &plan.owner, &archive) {
+            plan.collides = true;
+            plan.notes.push(format!("This is a newer version of {old}, which it replaces."));
+        }
         Ok(plan)
     })
     .await

@@ -23,7 +23,7 @@ use super::model::Conflict;
 use super::model::Mod;
 use super::{
     archive, decompile, decompile::Decompiler, deploy, discovery, download, erase, loadout,
-    merge, nexus, nxm,
+    merge, nexus, nexusname, nxm,
 };
 use super::vanilla::VanillaSource;
 
@@ -233,10 +233,15 @@ struct Previous {
     build: Option<PathBuf>,
     /// the archive this install supersedes
     archive: Option<PathBuf>,
+    /// the old version's staged copy, when it sits under another name
+    staged: Option<PathBuf>,
 }
 
 impl Previous {
-    fn of(had: &loadout::Entry) -> Previous {
+    /// `new_owner` is the folder the install is writing. When the old version
+    /// was staged under a different one, nothing replaces its staged copy in
+    /// place, so it is reclaimed like the old archive is.
+    fn of(had: &loadout::Entry, new_owner: &str) -> Previous {
         Previous {
             // Only ever a build of OURS. An `Original` entry's source is the
             // staged copy, which `archive::install` has already replaced in
@@ -244,8 +249,66 @@ impl Previous {
             build: (had.variant != loadout::Variant::Original)
                 .then(|| PathBuf::from(&had.source)),
             archive: had.archive.as_deref().map(PathBuf::from),
+            staged: (had.owner != new_owner).then(|| had.origin_path()),
         }
     }
+}
+
+/// The installed mod an archive replaces, if any.
+///
+/// The entry under the same folder name, first. Failing that, the installed
+/// earlier version of the *same Nexus file* under another folder name -- an
+/// author renaming the folder inside the zip between versions used to make an
+/// update install beside the version it replaced, both loading. Measured on
+/// Refiner Wiki Slots: `RefinerWikiSlots` 1.4.1 and `RefinerWikiSlots_normal`
+/// 1.4.2, both deployed, and the old one reported as outdated for good.
+///
+/// "Same file" is the mod id *and* the title Nexus wrote into the archive name.
+/// The id alone is not enough: one page can host several mods, and page 3718
+/// itself hosts `Refiner Wiki Slots normal` and `... legend`, which must not
+/// replace each other. More than one match is no answer, as everywhere else.
+fn replaced_by(book: &loadout::Loadout, owner: &str, archive: &Path) -> Option<loadout::Entry> {
+    if let Some(same) = book.get(owner) {
+        return Some(same.clone());
+    }
+    let title = |path: &Path| {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        nexusname::parse(&name).map(|n| (n.mod_id, n.name.trim().to_lowercase()))
+    };
+    let new = title(archive)?;
+    let mut hits = book.entries.iter().filter(|e| {
+        e.variant != loadout::Variant::Merged
+            && e.archive.as_deref().and_then(|a| title(Path::new(a))).as_ref() == Some(&new)
+    });
+    let first = hits.next()?;
+    hits.next().is_none().then(|| first.clone())
+}
+
+/// Drop the old version's record when it lived under another folder name.
+///
+/// After `put` of the new one, so the two never share a name being removed.
+/// Merges built from the old version go too, for the reason `retire_merges_of`
+/// gives -- they hold the old version's edits.
+fn forget_renamed(
+    book: &mut loadout::Loadout,
+    had: Option<&loadout::Entry>,
+    new_owner: &str,
+    mods_dir: &Path,
+) -> Vec<String> {
+    match had {
+        Some(had) if had.owner != new_owner => {
+            book.entries.retain(|e| e.owner != had.owner);
+            retire_merges_of(book, &had.owner, mods_dir)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Wherever the install would replace a mod under another name, say so.
+pub fn replaces_other(loadout_path: &Path, owner: &str, archive: &Path) -> Option<String> {
+    replaced_by(&loadout::Loadout::read(loadout_path), owner, archive)
+        .map(|e| e.owner)
+        .filter(|old| old != owner)
 }
 
 /// Delete what the previous version left, now that nothing points at it.
@@ -274,6 +337,11 @@ fn reclaim_previous(places: &Places, previous: Previous, now: &Path) -> Vec<Stri
         None,
     );
     let mut freed = Vec::new();
+    if let Some(staged) = previous.staged {
+        if roots.covers(&staged) && std::fs::remove_dir_all(&staged).is_ok() {
+            freed.push(staged.display().to_string());
+        }
+    }
     if let Some(build) = previous.build {
         if roots.covers(&build) && std::fs::remove_dir_all(&build).is_ok() {
             freed.push(build.display().to_string());
@@ -458,9 +526,10 @@ pub fn install_from_link(
     // A reinstall over an existing entry is the common case; take out exactly
     // what the loadout recorded rather than guessing from the name.
     let mut previous = Previous::default();
-    if let Some(had) = loadout::Loadout::read(loadout_path).get(&plan.owner) {
+    let had = replaced_by(&loadout::Loadout::read(loadout_path), &plan.owner, &archive_path);
+    if let Some(had) = &had {
         deploy::undeploy(&places.mods_dir, &had.deployed)?;
-        previous = Previous::of(had);
+        previous = Previous::of(had, &plan.owner);
     }
     let placed = deploy::deploy(&staged, &places.mods_dir)?;
 
@@ -486,7 +555,8 @@ pub fn install_from_link(
     // merge: it holds the *old* version's edits and suppresses this one, so
     // the update would never reach the game. Take it out and let the next scan
     // offer the merge again, now against what is actually installed.
-    let stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
+    let mut stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
+    stale.extend(forget_renamed(&mut book, had.as_ref(), &plan.owner, &places.mods_dir));
     book.write(loadout_path)?;
     // Only once the new record is safely on disk: a crash before this leaves
     // the old files in place, which is recoverable, where the other order
@@ -528,8 +598,8 @@ pub fn install_from_file(
     let book = loadout::Loadout::read(loadout_path);
     // Cloned so the refusal can be decided, and the old entry still read,
     // without holding a borrow of `book` across the write below.
-    let known = book.get(&named.owner).cloned();
-    if known.is_some() && !overwrite {
+    let known = replaced_by(&book, &named.owner, archive_path);
+    if let Some(had) = known.as_ref().filter(|_| !overwrite) {
         // Not "already in the mods folder": this is a fact about the *loadout*,
         // and the two come apart -- a mod recorded here whose folder another
         // manager has since purged is installed as far as this program is
@@ -538,7 +608,7 @@ pub fn install_from_file(
         // is not there.
         return Err(format!(
             "{} is already installed. Choose to replace it, or remove it first.",
-            named.owner
+            had.owner
         ));
     }
 
@@ -548,8 +618,9 @@ pub fn install_from_file(
     let mut previous = Previous::default();
     if let Some(had) = &known {
         deploy::undeploy(&places.mods_dir, &had.deployed)?;
-        previous = Previous::of(had);
+        previous = Previous::of(had, &plan.owner);
     }
+    let had = known;
     let placed = deploy::deploy(&staged, &places.mods_dir)?;
 
     let mut book = book;
@@ -573,7 +644,8 @@ pub fn install_from_file(
     // merge: it holds the *old* version's edits and suppresses this one, so
     // the update would never reach the game. Take it out and let the next scan
     // offer the merge again, now against what is actually installed.
-    let stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
+    let mut stale = retire_merges_of(&mut book, &plan.owner, &places.mods_dir);
+    stale.extend(forget_renamed(&mut book, had.as_ref(), &plan.owner, &places.mods_dir));
     book.write(loadout_path)?;
     // Only once the new record is safely on disk: a crash before this leaves
     // the old files in place, which is recoverable, where the other order
@@ -725,7 +797,7 @@ mod tests {
             edited: false,
         };
 
-        let freed = reclaim_previous(&places, Previous::of(&had), Path::new("new.zip"));
+        let freed = reclaim_previous(&places, Previous::of(&had, &had.owner), Path::new("new.zip"));
         assert!(!build.exists(), "the old cleaned build is still in derived/");
         assert_eq!(freed.len(), 1);
     }
@@ -755,7 +827,7 @@ mod tests {
             edited: false,
         };
 
-        let freed = reclaim_previous(&places, Previous::of(&had), Path::new("new.zip"));
+        let freed = reclaim_previous(&places, Previous::of(&had, &had.owner), Path::new("new.zip"));
         assert!(staged.exists(), "the freshly staged copy was deleted");
         assert!(freed.is_empty());
     }
@@ -791,17 +863,17 @@ mod tests {
             edited: false,
         };
 
-        reclaim_previous(&places, Previous::of(&entry(&old)), &new);
+        reclaim_previous(&places, Previous::of(&entry(&old), "Cool Mod"), &new);
         assert!(!old.exists(), "the superseded archive is still there");
         assert!(new.exists(), "the archive just downloaded was deleted");
 
         // An archive the user installed from their own folder is theirs.
-        reclaim_previous(&places, Previous::of(&entry(&mine)), &new);
+        reclaim_previous(&places, Previous::of(&entry(&mine), "Cool Mod"), &new);
         assert!(mine.exists(), "deleted a file outside the managed folders");
 
         // Re-downloading the same file must not delete what the record now
         // points at. Both paths are the same file, so nothing should go.
-        reclaim_previous(&places, Previous::of(&entry(&new)), &new);
+        reclaim_previous(&places, Previous::of(&entry(&new), "Cool Mod"), &new);
         assert!(new.exists(), "deleted the archive the loadout now names");
     }
 
@@ -1053,4 +1125,54 @@ mod tests {
             .exists());
     }
 
+    fn installed(owner: &str, archive: &str) -> loadout::Entry {
+        loadout::Entry {
+            owner: owner.into(),
+            source: format!("staging/{owner}"),
+            origin: None,
+            archive: Some(format!("D:/NMSAnomaly/archives/{archive}")),
+            variant: loadout::Variant::Original,
+            replaces: Vec::new(),
+            deployed: vec![owner.into()],
+            built_from: None,
+            enabled: true,
+            edited: false,
+        }
+    }
+
+    #[test]
+    fn an_update_whose_folder_was_renamed_replaces_the_old_version() {
+        // Page 3718 as installed on 2026-10-02: the author renamed the folder
+        // inside the zip, and the page also hosts a `legend` variant.
+        let book = loadout::Loadout {
+            entries: vec![
+                installed("RefinerWikiSlots", "Refiner Wiki Slots normal 3718 1.4.1 2026-09-22T00-46Z lN9fGp87U.zip"),
+                installed("RefinerWikiSlots_legend", "Refiner Wiki Slots legend 3718 1.4.0 2026-09-22T00-47Z yIucYBUZh.zip"),
+            ],
+        };
+        let new = Path::new("Refiner Wiki Slots normal 3718 1.4.2 2026-09-29T11-29Z SxEYBfk7E (2).zip");
+        let had = replaced_by(&book, "RefinerWikiSlots_normal", new).expect("the 1.4.1 entry");
+        assert_eq!(had.owner, "RefinerWikiSlots");
+
+        let legend = Path::new("Refiner Wiki Slots legend 3718 1.4.2 2026-09-29T11-30Z L5bXM34EZ.zip");
+        let had = replaced_by(&book, "RefinerWikiSlots_legend2", legend).expect("the legend entry");
+        assert_eq!(had.owner, "RefinerWikiSlots_legend");
+    }
+
+    #[test]
+    fn a_different_mod_or_an_ambiguous_one_is_not_replaced() {
+        let book = loadout::Loadout {
+            entries: vec![
+                installed("A", "Twin 100 1.0 2026-01-01T00-00Z aaa.zip"),
+                installed("B", "Twin 100 1.1 2026-02-01T00-00Z bbb.zip"),
+                installed("C", "Other 200 1.0 2026-01-01T00-00Z ccc.zip"),
+            ],
+        };
+        // two installed copies of one title: no guess
+        assert!(replaced_by(&book, "New", Path::new("Twin 100 2.0 2026-03-01T00-00Z x.zip")).is_none());
+        // same page, different title
+        assert!(replaced_by(&book, "New", Path::new("Third 200 1.0 2026-03-01T00-00Z x.zip")).is_none());
+        // and the same folder name always wins
+        assert_eq!(replaced_by(&book, "C", Path::new("anything.zip")).unwrap().owner, "C");
+    }
 }

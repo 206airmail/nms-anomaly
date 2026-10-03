@@ -364,12 +364,22 @@
 
             <span class="who">{row.name}</span>
 
-            <!-- At most three, and never two that say the same thing. The
-                 first is why you would come looking for this mod; the second
-                 is what the game is doing with it; the third is whose build
-                 it is running. -->
+            <!-- One grid cell for all of them. Each badge used to be its own
+                 grid item in a three-column row, so the second and third
+                 wrapped onto a line of their own under the name. -->
+            <span class="badges">
+            <!-- Never two that say the same thing. First why you would come
+                 looking for this mod, then what the game is doing with it,
+                 then whose build it is running. -->
             {#if attention.has(row.owner)}
               <span class="badge badge-alert">fix</span>
+            {/if}
+            <!-- Its own test, not a branch of the state below: it used to sit
+                 after "inactive" in one chain, so a switched-off mod with a
+                 new version said only "inactive" -- and those are exactly the
+                 mods you would update before switching back on. -->
+            {#if outdated.has(row.owner)}
+              <span class="badge badge-signal">update</span>
             {/if}
             {#if row.mergedInto}
               <!-- Switched on, and still not in the game. Saying "inactive"
@@ -377,8 +387,6 @@
               <span class="badge badge-info">merged</span>
             {:else if !row.enabled}
               <span class="badge badge-quiet">inactive</span>
-            {:else if outdated.has(row.owner)}
-              <span class="badge badge-signal">update</span>
             {/if}
             {#if row.variant}
               <span class="badge badge-info">{row.variant}</span>
@@ -390,6 +398,7 @@
             {#if row.edited}
               <span class="badge badge-signal">edited</span>
             {/if}
+            </span>
           </button>
         </li>
       {/each}
@@ -734,6 +743,16 @@
 
   /* Three badges can land on one row, so they are allowed to sit together in
      the last column rather than each claiming a track of the grid. */
+  .badges {
+    display: flex;
+    gap: 0.3125rem;
+    align-items: center;
+  }
+
+  .badges:empty {
+    display: none;
+  }
+
   .list li .row :global(.badge) {
     flex: none;
   }

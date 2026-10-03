@@ -73,6 +73,17 @@ impl NexusFile {
 pub struct FileUpdate {
     pub old_file_id: u64,
     pub new_file_id: u64,
+    /// Kept after the files themselves are deleted, which is what lets an
+    /// installed file the page no longer lists still be placed in its chain.
+    /// Since mid-2026 Nexus writes a storage path here (`80/c5/62/<uuid>`)
+    /// instead of the archive name, so a name match only works on older links.
+    #[serde(default)]
+    pub old_file_name: Option<String>,
+    #[serde(default)]
+    pub new_file_name: Option<String>,
+    /// when the *new* file was uploaded
+    #[serde(default)]
+    pub uploaded_timestamp: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -369,22 +380,98 @@ fn stem(name: &str) -> &str {
     name
 }
 
-/// Find the exact file record the installed archive came from.
+/// The span of unix seconds an archive name's upload stamp can stand for.
 ///
-/// The archive name Vortex keeps *is* the Nexus file name for every mod in the
-/// measured library, so this is an equality test, not a guess. The fallback on
-/// version exists for the day Vortex renames something, and refuses to answer
-/// when it is ambiguous.
-fn locate<'a>(archive: &str, parsed_version: &str, files: &'a [NexusFile]) -> Option<&'a NexusFile> {
-    let want = stem(archive.trim());
-    if let Some(hit) = files.iter().find(|f| stem(&f.file_name) == want) {
-        return Some(hit);
+/// The dashed form carries the exact second. The spaced form is cut to the
+/// minute -- measured: 06:30:38 is written `06-30Z`, 07:58:53 `07-58Z` -- so it
+/// covers sixty seconds.
+fn upload_span(uploaded: &str) -> Option<std::ops::Range<i64>> {
+    if let Ok(t) = uploaded.parse::<i64>() {
+        return Some(t..t + 1);
     }
-    let mut by_version = files.iter().filter(|f| f.version == parsed_version);
-    let first = by_version.next()?;
-    // Ambiguous is not a match: two files sharing a version on one page means
-    // we cannot say which is installed, and a wrong guess invents an update.
-    by_version.next().is_none().then_some(first)
+    // `2026-09-13T06-30Z`
+    let b = uploaded.as_bytes();
+    if b.len() != 17 {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| uploaded.get(r)?.parse::<i64>().ok();
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm) = (num(11..13)?, num(14..16)?);
+    // Days since 1970-01-01 for a proleptic Gregorian date (Hinnant's
+    // days_from_civil), so this needs no date library for one conversion.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let start = days * 86_400 + hh * 3_600 + mm * 60;
+    Some(start..start + 60)
+}
+
+/// Find the file id the installed archive came from.
+///
+/// An id, not a listed file, because the installed file is often *not listed*:
+/// some authors delete each old file when they upload its replacement, so the
+/// page shows one file and only `file_updates` remembers the rest. Measured on
+/// mods 2601 and 2764: every old file gone, the chain intact, and the update
+/// invisible because this used to give up at "not listed".
+///
+/// In order of strength:
+/// 1. the archive name equals a listed file's name -- exact for every mod in
+///    the measured library while its file is still up;
+/// 2. it equals a name the update chain recorded -- older links only, see
+///    [`FileUpdate::old_file_name`];
+/// 3. its upload stamp falls on exactly one known upload, listed or chained --
+///    the only anchor left for a deleted file with a storage-path name;
+/// 4. its version matches exactly one listed file.
+///
+/// 3 and 4 refuse to answer when more than one file fits: two mods on one page
+/// uploaded in the same minute, or sharing a version, cannot be told apart, and
+/// a wrong guess invents an update.
+fn locate(archive: &str, parsed: Option<&nexusname::ArchiveName>, body: &FilesResponse) -> Option<u64> {
+    let want = stem(archive.trim());
+    if let Some(hit) = body.files.iter().find(|f| stem(&f.file_name) == want) {
+        return Some(hit.file_id);
+    }
+    for u in &body.file_updates {
+        if u.new_file_name.as_deref().map(stem) == Some(want) {
+            return Some(u.new_file_id);
+        }
+        if u.old_file_name.as_deref().map(stem) == Some(want) {
+            return Some(u.old_file_id);
+        }
+    }
+
+    let only = |mut ids: Vec<u64>| {
+        ids.sort_unstable();
+        ids.dedup();
+        (ids.len() == 1).then(|| ids[0])
+    };
+
+    if let Some(span) = parsed.and_then(|p| upload_span(&p.uploaded)) {
+        let uploads = body
+            .files
+            .iter()
+            .map(|f| (f.file_id, Some(f.uploaded_timestamp)))
+            .chain(body.file_updates.iter().map(|u| (u.new_file_id, u.uploaded_timestamp)));
+        let hits: Vec<u64> = uploads
+            .filter(|(_, t)| t.is_some_and(|t| span.contains(&t)))
+            .map(|(id, _)| id)
+            .collect();
+        if let Some(id) = only(hits) {
+            return Some(id);
+        }
+    }
+
+    let version = parsed.map(|p| p.version.as_str())?;
+    only(
+        body.files
+            .iter()
+            .filter(|f| f.version == version)
+            .map(|f| f.file_id)
+            .collect(),
+    )
 }
 
 /// Walk `old -> new` to the end of the chain.
@@ -548,19 +635,23 @@ pub fn check_all(
             None => Standing::Unknown {
                 reason: "not checked".into(),
             },
-            Some(Ok(body)) => match locate(&archive, &version, &body.files) {
+            Some(Ok(body)) => match locate(&archive, nexusname::parse(&archive).as_ref(), body) {
                 None => Standing::Unknown {
                     reason: "the installed file is not listed on its Nexus page".into(),
                 },
-                Some(installed) => {
-                    let tip = newest(installed.file_id, &body.file_updates);
-                    if tip == installed.file_id {
-                        if installed.offered() {
-                            Standing::Current
-                        } else {
-                            Standing::Withdrawn {
-                                installed_version: installed.version.clone(),
-                            }
+                Some(installed_id) => {
+                    let tip = newest(installed_id, &body.file_updates);
+                    let listed = body.files.iter().find(|f| f.file_id == installed_id);
+                    if tip == installed_id {
+                        // The end of its chain. Unlisted means deleted with no
+                        // successor, which is withdrawn just as archived is.
+                        match listed {
+                            Some(f) if f.offered() => Standing::Current,
+                            _ => Standing::Withdrawn {
+                                installed_version: listed
+                                    .map(|f| f.version.clone())
+                                    .unwrap_or_else(|| version.clone()),
+                            },
                         }
                     } else {
                         match body.files.iter().find(|f| f.file_id == tip) {
@@ -608,6 +699,26 @@ mod tests {
         }
     }
 
+    /// An update link as the API sends it, minus the names and times.
+    fn link(old: u64, new: u64) -> FileUpdate {
+        FileUpdate {
+            old_file_id: old,
+            new_file_id: new,
+            old_file_name: None,
+            new_file_name: None,
+            uploaded_timestamp: None,
+        }
+    }
+
+    fn page(files: Vec<NexusFile>, file_updates: Vec<FileUpdate>) -> FilesResponse {
+        FilesResponse { files, file_updates }
+    }
+
+    /// Where `locate` is asked about an archive whose name parses.
+    fn find(archive: &str, body: &FilesResponse) -> Option<u64> {
+        locate(archive, nexusname::parse(archive).as_ref(), body)
+    }
+
     /// A scratch folder that cleans up after itself.
     struct Dir(std::path::PathBuf);
 
@@ -635,8 +746,8 @@ mod tests {
     #[test]
     fn the_chain_is_followed_to_its_end() {
         let updates = vec![
-            FileUpdate { old_file_id: 1, new_file_id: 2 },
-            FileUpdate { old_file_id: 2, new_file_id: 3 },
+            link(1, 2),
+            link(2, 3),
         ];
         assert_eq!(newest(1, &updates), 3);
         assert_eq!(newest(3, &updates), 3);
@@ -647,8 +758,8 @@ mod tests {
         // No file in a loop is the newest, so the caller is told the installed
         // one is the end of the line rather than offered a coin-flip.
         let updates = vec![
-            FileUpdate { old_file_id: 1, new_file_id: 2 },
-            FileUpdate { old_file_id: 2, new_file_id: 1 },
+            link(1, 2),
+            link(2, 1),
         ];
         assert_eq!(newest(1, &updates), 1);
         assert_eq!(newest(2, &updates), 2);
@@ -661,8 +772,8 @@ mod tests {
             file(38570, "5.9", "Better Ship Transfer Range 5.9-1201-5-9-1738187904", Some("MAIN")),
             file(41897, "6.0", "Better Ship Teleport Module Range 6.0-1201-6-0-1751870410", Some("MAIN")),
         ];
-        let hit = locate("Better Ship Transfer Range 5.9-1201-5-9-1738187904", "5.9", &files).unwrap();
-        assert_eq!(hit.file_id, 38570);
+        let hit = find("Better Ship Transfer Range 5.9-1201-5-9-1738187904", &page(files, vec![]));
+        assert_eq!(hit, Some(38570));
     }
 
     #[test]
@@ -674,10 +785,8 @@ mod tests {
             Some("MAIN"),
         )];
         assert_eq!(
-            locate("All Dot Crosshairs 4511 2 2026-09-17T18-53Z pQZbnWODh.zip", "2", &files)
-                .unwrap()
-                .file_id,
-            7
+            find("All Dot Crosshairs 4511 2 2026-09-17T18-53Z pQZbnWODh.zip", &page(files, vec![])),
+            Some(7)
         );
     }
 
@@ -689,7 +798,9 @@ mod tests {
             file(1, "3.0", "Something Else", Some("MAIN")),
             file(2, "3.0", "Another Thing", Some("MAIN")),
         ];
-        assert!(locate("Renamed By Vortex", "3.0", &files).is_none());
+        // Parses as version 3.0, and its stamp matches no upload.
+        let archive = "Renamed By Vortex 9 3.0 2020-01-01T00-00Z abc";
+        assert_eq!(find(archive, &page(files, vec![])), None);
     }
 
     #[test]
@@ -775,5 +886,76 @@ mod tests {
         assert!(file(2, "2.0", "Here", Some("MAIN")).offered());
         assert!(!file(1, "2.0", "Gone", Some("ARCHIVED")).offered());
         assert!(!file(3, "2.0", "Nameless", None).offered());
+    }
+
+    #[test]
+    fn the_upload_stamp_reads_as_the_minute_it_names() {
+        // 2026-09-13T06:30:38Z is 1789281038, uploaded inside `06-30Z`.
+        let span = upload_span("2026-09-13T06-30Z").unwrap();
+        assert!(span.contains(&1789281038));
+        assert_eq!(span.end - span.start, 60);
+        assert_eq!(upload_span("1738187904"), Some(1738187904..1738187905));
+        assert_eq!(upload_span("not a stamp"), None);
+    }
+
+    /// Mod 2764 as Nexus served it on 2026-10-02: only the newest pair of files
+    /// is listed, the chains run through storage-path names, and two mods share
+    /// the page. The installed 4.4 is file 48486, which the page no longer has.
+    fn sentinel_page() -> FilesResponse {
+        let mut sentinel = file(49353, "4.6", "Sentinel Ship Animations 2764 4.6 2026-09-30T07-58Z DcGFLKeCx", Some("MAIN"));
+        sentinel.uploaded_timestamp = 1790755133; // 07:58:53
+        let mut solar = file(49354, "4.6", "Solar Ship Animations 2764 4.6 2026-09-30T07-59Z mijBfGQJS", Some("OPTIONAL"));
+        solar.uploaded_timestamp = 1790755153; // 07:59:13
+        let chained = |old: u64, new: u64, at: i64| FileUpdate {
+            old_file_id: old,
+            new_file_id: new,
+            old_file_name: Some(format!("aa/bb/cc/{old}")),
+            new_file_name: Some(format!("aa/bb/cc/{new}")),
+            uploaded_timestamp: Some(at),
+        };
+        page(
+            vec![sentinel, solar],
+            vec![
+                chained(47410, 48486, 1789283668), // 2026-09-13 07:14:28
+                chained(48486, 49353, 1790755133),
+                chained(47402, 48487, 1789284037), // 2026-09-13 07:20:37
+                chained(48487, 49354, 1790755153),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_deleted_installed_file_is_found_by_its_upload_stamp() {
+        let body = sentinel_page();
+        let installed = find("Sentinel Ship Animations 2764 4.4 2026-09-13T07-14Z mijBfGQbW.zip", &body);
+        assert_eq!(installed, Some(48486));
+        assert_eq!(newest(48486, &body.file_updates), 49353);
+        // and its sibling on the same page is not mistaken for it
+        let solar = find("Solar Ship Animations 2764 4.4 2026-09-13T07-20Z zzzzzzzzz.zip", &body);
+        assert_eq!(solar, Some(48487));
+    }
+
+    #[test]
+    fn two_uploads_in_the_installed_minute_are_not_guessed_between() {
+        let mut body = sentinel_page();
+        body.file_updates.push(FileUpdate {
+            uploaded_timestamp: Some(1789283690), // also 07:14
+            ..link(1, 2)
+        });
+        let installed = find("Sentinel Ship Animations 2764 4.4 2026-09-13T07-14Z mijBfGQbW.zip", &body);
+        assert_eq!(installed, None);
+    }
+
+    #[test]
+    fn a_deleted_file_is_found_by_the_name_an_older_link_recorded() {
+        let body = page(
+            vec![file(23858, "1.2", "Freighter Ship Salvage Terminals-2601-1-2-1678401721", Some("MAIN"))],
+            vec![FileUpdate {
+                old_file_name: Some("Freighter Ship Salvage Terminals-2601-1-1-1677752941.zip".into()),
+                new_file_name: Some("Freighter Ship Salvage Terminals-2601-1-2-1678401721.zip".into()),
+                ..link(23539, 23858)
+            }],
+        );
+        assert_eq!(find("Freighter Ship Salvage Terminals-2601-1-1-1677752941", &body), Some(23539));
     }
 }
